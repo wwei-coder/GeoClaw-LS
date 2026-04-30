@@ -4,7 +4,14 @@
 
 GeoClaw-LS 是一个面向地质滑坡防治领域的本地智能检索助手。项目核心能力是将本地地质灾害资料构建为知识库，通过 RAG（检索增强生成）、长期记忆、任务规划和工具调用，为用户提供中文专业问答、资料引用、计算、对话回顾和深度分析。
 
-当前项目不是 Git 仓库，根目录没有 `.git`。`AGENTS.md` 原本为空。
+当前项目已经初始化为 Git 仓库，并配置 GitHub 远程仓库：
+
+- 当前分支：`main`
+- 远程仓库：`origin -> https://github.com/wwei-coder/GeoClaw-LS.git`
+- 当前基线提交：`956a985 Initial commit`
+- 当前 `main` 跟踪 `origin/main`，基线提交已经同步到远程。
+
+注意：最近一次检查时工作区仍存在未提交本地改动，包括 `config/config.yaml`、`static/app.js`、`static/index.html`、`static/styles.css`，以及未跟踪的 `.need_reset`。这些内容尚未提交或推送。
 
 ## 技术栈
 
@@ -100,6 +107,24 @@ python utils\health_check.py
 - `.pytest_cache/`、`.ruff_cache/`、`__pycache__/`：本地缓存目录。
 
 这些运行数据通常不应当作为源代码手动编辑。若需要重建知识库，优先使用 WebUI 的知识库重建功能或调用 `/api/kb/rebuild`。
+
+## 版本控制
+
+仓库已设置 `.gitignore`，用于排除本地运行产物和敏感配置。当前应避免纳入版本控制的内容包括：
+
+- Python 缓存：`__pycache__/`、`.pytest_cache/`、`.ruff_cache/`、`.mypy_cache/`
+- 虚拟环境：`.venv/`、`venv/`、`env/`
+- IDE 和系统文件：`.idea/`、`.vscode/`、`.DS_Store`、`Thumbs.db`
+- 运行日志：`logs/`、`*.log`
+- 本地数据库：`*.db`、`*.sqlite`、`*.sqlite3`
+- 向量索引：`vector_db/`、`chroma/`
+- 文档指纹：`doc_fingerprint.json`
+- 系统重置标记：`.need_reset`
+- 本地模型和缓存：`models/`、`.cache/`
+- 环境变量和密钥：`.env`、`.env.*`
+- 临时文件和构建产物：`tmp/`、`temp/`、`build/`、`dist/`、`*.egg-info/`
+
+`data/` 当前未被忽略，表示知识库源文档会随项目版本化。如果后续文档体积变大或涉及非公开资料，应改用 Git LFS、对象存储或在 `.gitignore` 中排除 `data/`，并用 README/脚本说明数据获取方式。
 
 ## API 概览
 

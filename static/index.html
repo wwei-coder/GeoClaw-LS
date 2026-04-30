@@ -14,7 +14,7 @@
       <div class="sidebar-top">
         <div class="logo-wrap">
           <div class="logo">GeoClaw-LS</div>
-          <div class="logo-sub">地质滑坡智能检索助手</div>
+          <div class="logo-sub">地质滑坡智能助手</div>
         </div>
         <button id="newSessionBtn" class="btn btn-green">+ 新建对话</button>
         <input id="sessionSearch" class="input" placeholder="搜索历史会话" />
@@ -23,20 +23,22 @@
       </div>
       <div class="sidebar-bottom">
         <div class="sidebar-actions">
-          <button id="openSettingsBtn" class="btn btn-outline">设置</button>
           <div id="kbMenuWrap" class="menu-wrap">
             <button id="toggleKbMenuBtn" class="btn btn-outline">知识库操作</button>
             <div class="menu-panel">
               <button id="openKbConsoleBtn" class="btn btn-outline small menu-item">打开控制台</button>
-              <button id="syncKbBtn" class="btn btn-outline danger small menu-item">执行刷新</button>
             </div>
           </div>
         </div>
         <div id="statusText" class="status">就绪</div>
+        <button id="kbResetBtn" class="btn btn-outline danger small">系统重置</button>
       </div>
     </aside>
 
     <main class="main">
+      <div class="workspace-topbar">
+        <button id="openSettingsBtn" class="btn btn-outline small">设置</button>
+      </div>
       <header class="header">
         <div class="header-meta">
           <div class="header-eyebrow">工作区</div>
@@ -95,22 +97,14 @@
         <button id="kbRefreshBtn" class="btn btn-outline small">刷新状态</button>
         <button id="kbSyncBtn" class="btn btn-outline small">增量同步</button>
         <button id="kbRebuildBtn" class="btn btn-outline danger small">全量重建</button>
-        <button id="kbResetBtn" class="btn btn-outline danger small">系统重置</button>
+        <button id="syncKbBtn" class="btn btn-outline danger small">执行刷新</button>
         <button id="closeKbBtn" class="btn btn-outline small">关闭</button>
       </div>
 
       <div class="settings-body">
         <section class="form-panel">
-          <h3>运行状态</h3>
-          <div id="kbStatusContent" class="mono-block"></div>
-        </section>
-        <section class="form-panel">
           <h3>文档索引</h3>
           <div id="kbDocsContent" class="mono-block"></div>
-        </section>
-        <section class="form-panel">
-          <h3>检索诊断</h3>
-          <div id="kbDiagContent" class="mono-block"></div>
         </section>
       </div>
     </div>

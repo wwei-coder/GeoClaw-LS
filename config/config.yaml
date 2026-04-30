@@ -168,7 +168,7 @@ rag:
   quality_min_hits: 2
   quality_min_similarity: 0.45
   quality_min_source_diversity: 0.5
-  quality_threshold: 0.55
+  quality_threshold: 0.5
   rerank_strategy: keyword
   search_top_k: 3
   vector_collection_name: knowledge_base

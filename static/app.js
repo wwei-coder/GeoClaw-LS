@@ -7,9 +7,7 @@ const state = {
   selectedPrefix: "",
   selectedPath: "",
   settingsDirty: false,
-  kbStatus: null,
   kbDocs: [],
-  kbDiag: null,
 };
 let pageScrollLockCount = 0;
 let isAsking = false;
@@ -321,6 +319,12 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;");
 }
 
+function escapeAttr(text) {
+  return escapeHtml(String(text ?? ""))
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function normalizeSegment(segment = "") {
   return String(segment || "").trim().toLowerCase();
 }
@@ -357,6 +361,55 @@ function stringifyValue(value) {
     }
   }
   return String(value ?? "");
+}
+
+function formatFileSize(size) {
+  const n = Number(size) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDocStatus(status) {
+  const key = String(status || "").toLowerCase();
+  if (key === "synced") return "已同步";
+  if (key === "updated") return "已更新";
+  if (key === "added") return "已新增";
+  if (key === "removed") return "已删除";
+  if (!key || key === "unknown") return "未知";
+  return key;
+}
+
+function renderKbDocsContent() {
+  const el = qs("kbDocsContent");
+  if (!el) return;
+  if (!state.kbDocs.length) {
+    el.innerHTML = `<div class="kb-doc-empty">暂无文档索引信息</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="kb-doc-list">
+      ${state.kbDocs
+        .map((d) => {
+          const name = escapeHtml(d.name || "未命名文档");
+          const chunks = Number(d.indexed_chunks ?? 0);
+          const status = formatDocStatus(d.fingerprint_status);
+          const sizeText = formatFileSize(d.size);
+          return `
+            <div class="kb-doc-item">
+              <div class="kb-doc-name" title="${name}">${name}</div>
+              <div class="kb-doc-meta">
+                <span>分块：${chunks}</span>
+                <span>状态：${status}</span>
+                <span>大小：${sizeText}</span>
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 function splitConfigPath(path = "") {
@@ -510,13 +563,18 @@ function parseByType(raw, type) {
 
 function valueToInput(item, value) {
   if (item.type === "bool") {
-    return `<input type="checkbox" data-path="${item.path}" data-type="${item.type}" ${value ? "checked" : ""} />`;
+    return `
+      <label class="switch-wrap">
+        <input class="switch-input" type="checkbox" data-path="${item.path}" data-type="${item.type}" ${value ? "checked" : ""} />
+        <span class="switch-slider" aria-hidden="true"></span>
+      </label>
+    `;
   }
   const safeVal =
     item.type === "list" || item.type === "dict"
       ? JSON.stringify(value)
       : String(value ?? "");
-  return `<input class="input setting-input" data-path="${item.path}" data-type="${item.type}" value="${escapeHtml(safeVal)}" />`;
+  return `<input class="input setting-input" data-path="${item.path}" data-type="${item.type}" value="${escapeAttr(safeVal)}" />`;
 }
 
 function renderTree() {
@@ -591,12 +649,9 @@ function renderSettingsForm() {
     .map((item) => {
       const value = getNested(state.settingsData, item.path);
       const displayName = getDisplayName(item);
-      const help = item.hint ? `作用：${item.hint.title}；建议：${item.hint.recommend}` : "作用：暂无详细说明";
       return `
         <div class="setting-row" data-row-path="${item.path}">
           <div class="setting-label">${escapeHtml(displayName)}</div>
-          <div class="setting-path">配置路径：${escapeHtml(item.path)}</div>
-          <div class="setting-help">${escapeHtml(help)}</div>
           ${valueToInput(item, value)}
         </div>
       `;
@@ -692,31 +747,14 @@ async function sendQuestion() {
 }
 
 async function refreshKbConsole() {
-  const [status, docs, diag] = await Promise.all([
-    api("/api/kb/status"),
-    api("/api/kb/documents"),
-    api("/api/kb/diagnostics?limit=20"),
-  ]);
-  state.kbStatus = status || {};
+  const docs = await api("/api/kb/documents");
   state.kbDocs = (docs && docs.documents) || [];
-  state.kbDiag = diag || {};
-
-  const docLines = state.kbDocs.map((d) => {
-    const st = d.fingerprint_status || "unknown";
-    const chunks = d.indexed_chunks ?? 0;
-    return `${d.name} | chunks=${chunks} | status=${st} | size=${d.size || 0}`;
-  });
-
-  qs("kbStatusContent").textContent = asPrettyJson(state.kbStatus);
-  qs("kbDocsContent").textContent = docLines.length ? docLines.join("\n") : "暂无文档索引信息";
-  qs("kbDiagContent").textContent = asPrettyJson(state.kbDiag);
+  renderKbDocsContent();
 }
 
 async function openKbConsole() {
   qs("kbPanel").classList.remove("hidden");
-  qs("kbStatusContent").textContent = "加载中...";
-  qs("kbDocsContent").textContent = "加载中...";
-  qs("kbDiagContent").textContent = "加载中...";
+  qs("kbDocsContent").innerHTML = `<div class="kb-doc-empty">加载中...</div>`;
   await refreshKbConsole();
 }
 
@@ -887,7 +925,6 @@ function bindEvents() {
     if (hasChildren) {
       if (expandedTreePrefixes.has(prefix)) expandedTreePrefixes.delete(prefix);
       else expandedTreePrefixes.add(prefix);
-      expandedTreePrefixes.add("");
     }
     renderTree();
     renderSettingsForm();
