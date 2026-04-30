@@ -299,7 +299,7 @@ body.scroll-locked {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 9px 12px;
 }
 
 .header-meta {
@@ -308,13 +308,13 @@ body.scroll-locked {
 
 .header-eyebrow {
   color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 2px;
+  font-size: 11px;
+  margin-bottom: 1px;
   letter-spacing: 0.3px;
 }
 
 #headerTitle {
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 760;
   white-space: nowrap;
   overflow: hidden;
@@ -867,7 +867,7 @@ textarea:focus-visible,
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 10px;
-    padding: 9px 10px;
+    padding: 8px 9px;
   }
 
   .workspace-topbar {
@@ -876,7 +876,7 @@ textarea:focus-visible,
   }
 
   #headerTitle {
-    font-size: 18px;
+    font-size: 17px;
     max-width: 100%;
   }
 

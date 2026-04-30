@@ -867,15 +867,6 @@ function bindEvents() {
   qs("kbRefreshBtn").addEventListener("click", async () => {
     await refreshKbConsole();
   });
-  qs("kbSyncBtn").addEventListener("click", async () => {
-    try {
-      await doKbSync(false);
-      await refreshKbConsole();
-    } catch (err) {
-      await uiAlert(`增量同步失败: ${err.message}`, "执行失败");
-      setStatus("就绪");
-    }
-  });
   qs("kbRebuildBtn").addEventListener("click", async () => {
     if (!(await uiConfirm("确定执行全量重建吗？这会较慢。", "全量重建"))) return;
     try {
