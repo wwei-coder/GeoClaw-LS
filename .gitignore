@@ -1,0 +1,54 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime logs
+logs/
+*.log
+
+# Local databases and generated indexes
+*.db
+*.sqlite
+*.sqlite3
+vector_db/
+chroma/
+doc_fingerprint.json
+
+# Local model/cache directories
+models/
+.cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+
+# Build/package outputs
+build/
+dist/
+*.egg-info/
