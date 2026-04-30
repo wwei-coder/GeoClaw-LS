@@ -116,7 +116,7 @@ class GraphAgent:
                  self._stream_thought(f"\n> [反思] 第 {review_count} 次修正，原因：{feedback}...\n")
                  question = f"用户问题：{question}\n\n之前的回答未通过审核，建议：{feedback}\n请重新规划任务。"
         else:
-             self._stream_thought(f"\n> [思考] 正在规划任务步骤...\n")
+             self._stream_thought("\n> [思考] 正在规划任务步骤...\n")
 
         try:
             res = await self.core.planner.ainvoke({"question": question})
@@ -134,7 +134,7 @@ class GraphAgent:
             return {"error": str(e), "trace": [f"Planner Error: {e}"]}
 
     async def _node_decision_async(self, state: AgentState) -> Dict[str, Any]:
-        self._stream_thought(f"\n> [思考] 正在评估上下文和决策...\n")
+        self._stream_thought("\n> [思考] 正在评估上下文和决策...\n")
         res = await self.core.decision.ainvoke({
             "question": state["question"],
             "plan": state["plan"]
@@ -175,7 +175,7 @@ class GraphAgent:
         new_sources = []
         
         if tool == "RAG":
-            self._stream_thought(f"> [执行] 正在检索知识库...\n")
+            self._stream_thought("> [执行] 正在检索知识库...\n")
             ret_res = await self.core.retriever.ainvoke({
                 "question": task,
                 "final_use_kb": True
@@ -207,7 +207,7 @@ class GraphAgent:
                 if allow_low_quality_replan:
                     replan_count = state.get("execution_replan_count", 0)
                     if replan_count < GRAPH_REPLAN_MAX_ATTEMPTS:
-                        self._stream_thought(f"> [结果] 检索质量偏低，正在触发重新规划...\n")
+                        self._stream_thought("> [结果] 检索质量偏低，正在触发重新规划...\n")
                         return {
                             "replanning_needed": True,
                             "execution_replan_count": replan_count + 1,
@@ -221,7 +221,7 @@ class GraphAgent:
                             "trace": ["RAG low-quality, triggering replan"]
                         }
             else:
-                self._stream_thought(f"> [结果] 未找到资料，正在触发重新规划...\n")
+                self._stream_thought("> [结果] 未找到资料，正在触发重新规划...\n")
                 return {
                     "replanning_needed": True,
                     "execution_replan_count": state.get("execution_replan_count", 0) + 1,
@@ -243,7 +243,7 @@ class GraphAgent:
                 or result_text.strip().startswith("[系统错误]")
                 or result_text.strip().startswith("[错误]")
             ):
-                 self._stream_thought(f"> [结果] 执行失败或为空，正在触发重新规划...\n")
+                 self._stream_thought("> [结果] 执行失败或为空，正在触发重新规划...\n")
                  return {
                     "replanning_needed": True,
                     "execution_replan_count": state.get("execution_replan_count", 0) + 1,
@@ -251,7 +251,7 @@ class GraphAgent:
                     "trace": [f"{tool} failed, triggering replan"]
                  }
 
-            self._stream_thought(f"> [结果] 执行完成\n")
+            self._stream_thought("> [结果] 执行完成\n")
 
         step_record = f"[{tool}] {task}：\n{self._truncate_step_result(result_text)}"
         
@@ -271,7 +271,7 @@ class GraphAgent:
                 "final_answer": f"系统运行出错：{state['error']}"
             }
         
-        self._stream_thought(f"\n> [思考] 正在汇总回答...\n")
+        self._stream_thought("\n> [思考] 正在汇总回答...\n")
         
         cb = getattr(self.core, "_current_stream_callback", None)
         
@@ -299,7 +299,7 @@ class GraphAgent:
         if count >= 2:
              return {"is_satisfactory": True}
 
-        self._stream_thought(f"\n> [思考] 正在审核回答质量...\n")
+        self._stream_thought("\n> [思考] 正在审核回答质量...\n")
         
         prompt = prompts.REVIEW_PROMPT.format(
             question=state["question"],
@@ -308,8 +308,10 @@ class GraphAgent:
         
         try:
             raw = (await ask_ollama_async(prompt)).strip()
-            if "```json" in raw: raw = raw.split("```json")[1].split("```")[0]
-            elif "```" in raw: raw = raw.split("```")[1].split("```")[0]
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0]
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0]
             
             res = json.loads(raw)
             is_ok = (res.get("status") == "PASS")
@@ -322,7 +324,7 @@ class GraphAgent:
                      "review_count": count + 1
                  }
             else:
-                 self._stream_thought(f"> [审核通过] 回答质量达标\n")
+                 self._stream_thought("> [审核通过] 回答质量达标\n")
                  return {"is_satisfactory": True}
         except Exception as e:
             err_text = str(e)

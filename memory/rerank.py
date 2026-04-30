@@ -1,7 +1,5 @@
 from utils.warning_filters import suppress_known_third_party_warnings
-
 suppress_known_third_party_warnings()
-
 import jieba
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod

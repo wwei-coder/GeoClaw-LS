@@ -51,8 +51,11 @@ def summarize_dialog(dialog_text: str) -> tuple[str, dict]:
     3. 提取用户偏好
     """
     # 1. 剔除含闲聊的整行
-    lines = [l for l in dialog_text.splitlines()
-             if not any(k in l.lower() for k in SMALL_TALK)]
+    lines = [
+        line
+        for line in dialog_text.splitlines()
+        if not any(k in line.lower() for k in SMALL_TALK)
+    ]
     
     if not lines:
         return "", {}

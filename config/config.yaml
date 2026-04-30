@@ -168,7 +168,7 @@ rag:
   quality_min_hits: 2
   quality_min_similarity: 0.45
   quality_min_source_diversity: 0.5
-  quality_threshold: 0.5
+  quality_threshold: 0.45
   rerank_strategy: keyword
   search_top_k: 3
   vector_collection_name: knowledge_base
@@ -177,6 +177,8 @@ kb_watcher:
   notify_no_change: false
   poll_interval_seconds: 3
   settle_seconds: 2
+observability:
+  enabled: true
 synthesis:
   max_evidence_chars: 800
 system:

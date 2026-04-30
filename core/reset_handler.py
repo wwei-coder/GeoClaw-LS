@@ -23,7 +23,7 @@ def mark_for_reset():
     """Create a flag file to indicate a reset is needed on next startup."""
     with open(RESET_FLAG_FILE, "w") as f:
         f.write("reset_pending")
-    logger.warning(f"⚠️  已标记为待重置。请重启程序以生效。")
+    logger.warning("⚠️  已标记为待重置。请重启程序以生效。")
 
 def perform_reset_if_needed():
     """Check for reset flag and delete vector_db if found."""

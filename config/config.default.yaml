@@ -173,6 +173,8 @@ kb_watcher:
   notify_no_change: false
   poll_interval_seconds: 3.0
   settle_seconds: 2.0
+observability:
+  enabled: false
 synthesis:
   max_evidence_chars: 800
 system:

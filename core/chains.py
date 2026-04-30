@@ -177,7 +177,7 @@ class PlannerChain(Chain):
     def _call(self, inputs: Dict[str, Any], _run_manager: Optional[CallbackManagerForChainRun] = None) -> Dict[str, Any]:
         question = inputs["question"]
         plan = plan_task(question)
-        logger.info(f"[PlannerChain] 任务计划：")
+        logger.info("[PlannerChain] 任务计划：")
         for i, s in enumerate(plan["steps"], 1):
             logger.info(f"  {i}. {s['tool']} → {s['task']}")
         
@@ -187,7 +187,7 @@ class PlannerChain(Chain):
     async def ainvoke(self, inputs: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         question = inputs["question"]
         plan = await plan_task_async(question)
-        logger.info(f"[PlannerChain] 任务计划 (Async)：")
+        logger.info("[PlannerChain] 任务计划 (Async)：")
         for i, s in enumerate(plan["steps"], 1):
             logger.info(f"  {i}. {s['tool']} → {s['task']}")
         
@@ -246,7 +246,7 @@ class HeuristicDecisionChain(Chain):
         if any(k in (question or "") for k in MATH_KEYWORDS) and not is_analysis:
             # Simple regex check for digits
             if re.search(r"\d", question):
-                logger.info(f"[Rule Override] 检测到计算意图，建议使用 CALCULATOR")
+                logger.info("[Rule Override] 检测到计算意图，建议使用 CALCULATOR")
                 force_tool = "CALCULATOR"
                 
                 # Check if we need RAG for variables
@@ -889,7 +889,7 @@ class SynthesisChain(Chain):
         remaining = content_budget - sum(allocs)
 
         if remaining > 0:
-            residuals = [max(0, l - min_each) for l in lengths]
+            residuals = [max(0, length - min_each) for length in lengths]
             residual_total = sum(residuals)
             if residual_total > 0:
                 extras = []
@@ -946,7 +946,8 @@ class SynthesisChain(Chain):
             lines = []
             for c in kb_chunks:
                 content = c.get("content", "") or ""
-                if len(content) > SYNTHESIS_MAX_EVIDENCE_CHARS: content = content[:SYNTHESIS_MAX_EVIDENCE_CHARS] + "…"
+                if len(content) > SYNTHESIS_MAX_EVIDENCE_CHARS:
+                    content = content[:SYNTHESIS_MAX_EVIDENCE_CHARS] + "…"
                 lines.append(f"【{c.get('doc_name')}】\n{content}")
             kb_evidence = "\n\n".join(lines)
             
@@ -980,7 +981,8 @@ class SynthesisChain(Chain):
         
         if sources:
             cited = [s for s in sources if s and s in final_answer]
-            if cited: sources = cited
+            if cited:
+                sources = cited
         
         # Memory Update
         self.agent_core.short_memory.append(f"用户：{question}")
@@ -1013,14 +1015,14 @@ class SynthesisChain(Chain):
             
             # 2. Vectorize the OLD summary into Long-Term Memory (if it exists)
             if self.agent_core.summary_memory:
-                logger.info(f"[Memory] 正在将旧摘要存入向量库...")
+                logger.info("[Memory] 正在将旧摘要存入向量库...")
                 self.agent_core.vector_store.add_episodic_memory(self.agent_core.summary_memory)
                 self.agent_core.vector_store.save()
 
             # 3. Update current summary
             self.agent_core.summary_memory = new_summary
             self.agent_core.short_memory = []
-            logger.info(f"[SynthesisChain] Memory compressed & updated")
+            logger.info("[SynthesisChain] Memory compressed & updated")
 
         return {"final_answer": final_answer, "final_sources": sources}
 
@@ -1039,7 +1041,8 @@ class SynthesisChain(Chain):
             lines = []
             for c in kb_chunks:
                 content = c.get("content", "") or ""
-                if len(content) > SYNTHESIS_MAX_EVIDENCE_CHARS: content = content[:SYNTHESIS_MAX_EVIDENCE_CHARS] + "…"
+                if len(content) > SYNTHESIS_MAX_EVIDENCE_CHARS:
+                    content = content[:SYNTHESIS_MAX_EVIDENCE_CHARS] + "…"
                 lines.append(f"【{c.get('doc_name')}】\n{content}")
             kb_evidence = "\n\n".join(lines)
             
@@ -1074,7 +1077,8 @@ class SynthesisChain(Chain):
         
         if sources:
             cited = [s for s in sources if s and s in final_answer]
-            if cited: sources = cited
+            if cited:
+                sources = cited
         
         # Memory Update
         self.agent_core.short_memory.append(f"用户：{question}")
@@ -1120,7 +1124,7 @@ class SynthesisChain(Chain):
             
             # 2. Vectorize the OLD summary into Long-Term Memory (if it exists)
             if self.agent_core.summary_memory:
-                logger.info(f"[Memory] 正在将旧摘要存入向量库...")
+                logger.info("[Memory] 正在将旧摘要存入向量库...")
                 # Run vector store write in executor
                 await loop.run_in_executor(
                     None, 
@@ -1134,6 +1138,6 @@ class SynthesisChain(Chain):
             # 3. Update current summary
             self.agent_core.summary_memory = new_summary
             self.agent_core.short_memory = []
-            logger.info(f"[SynthesisChain] Memory compressed & updated")
+            logger.info("[SynthesisChain] Memory compressed & updated")
 
         return {"final_answer": final_answer, "final_sources": sources}

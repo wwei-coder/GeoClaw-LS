@@ -438,7 +438,8 @@ class VectorStore:
         # Retrieve more candidates for fusion
         initial_k = top_k * VECTOR_SEARCH_CANDIDATE_MULTIPLIER
         count = self.collection.count()
-        if count == 0: return []
+        if count == 0:
+            return []
         initial_k = min(initial_k, count)
         
         results = self.collection.query(
@@ -448,7 +449,8 @@ class VectorStore:
         )
         
         candidates = []
-        if not results["ids"]: return []
+        if not results["ids"]:
+            return []
              
         for i in range(len(results["ids"][0])):
              meta = results["metadatas"][0][i]
@@ -480,7 +482,8 @@ class VectorStore:
         
         candidates = []
         for idx in top_n_indices:
-            if doc_scores[idx] == 0: continue # Skip zero relevance
+            if doc_scores[idx] == 0:
+                continue  # Skip zero relevance
             
             doc_id = self.bm25_ids[idx]
             candidates.append({
@@ -490,7 +493,8 @@ class VectorStore:
             })
             
         # Batch fetch details for BM25 candidates
-        if not candidates: return []
+        if not candidates:
+            return []
         
         ids_to_fetch = [c["id"] for c in candidates]
         

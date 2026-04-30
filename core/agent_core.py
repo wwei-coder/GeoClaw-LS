@@ -409,9 +409,13 @@ class AgentCore:
 
         # 4. Clean up meta-text
         if not any(k in question for k in ("翻译", "英文", "中文")):
-            lines = [l for l in final_answer.splitlines() if l.strip()]
+            lines = [line for line in final_answer.splitlines() if line.strip()]
             if lines and ("允许保留 InSAR" in lines[0] or "以下是英文单词" in lines[0]):
-                lines = [l for l in lines if "允许保留 InSAR" not in l and "以下是英文单词" not in l]
+                lines = [
+                    line
+                    for line in lines
+                    if "允许保留 InSAR" not in line and "以下是英文单词" not in line
+                ]
                 final_answer = "\n".join(lines).strip()
                 
         return final_answer
@@ -462,9 +466,13 @@ class AgentCore:
 
         # 4. Clean up meta-text
         if not any(k in question for k in ("翻译", "英文", "中文")):
-            lines = [l for l in final_answer.splitlines() if l.strip()]
+            lines = [line for line in final_answer.splitlines() if line.strip()]
             if lines and ("允许保留 InSAR" in lines[0] or "以下是英文单词" in lines[0]):
-                lines = [l for l in lines if "允许保留 InSAR" not in l and "以下是英文单词" not in l]
+                lines = [
+                    line
+                    for line in lines
+                    if "允许保留 InSAR" not in line and "以下是英文单词" not in line
+                ]
                 final_answer = "\n".join(lines).strip()
                 
         return final_answer
@@ -486,7 +494,8 @@ class AgentCore:
             title = title.strip()
             # Cleanup title
             title = re.sub(r'["\'《》]', '', title)
-            if len(title) > 15: title = title[:15]
+            if len(title) > 15:
+                title = title[:15]
 
             if not title:
                 title = self._build_fallback_session_title(first_question)

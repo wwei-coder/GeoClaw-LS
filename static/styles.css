@@ -580,6 +580,12 @@ textarea:focus-visible,
   background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
 }
 
+#kbPanel .settings-toolbar .btn.small {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+
 #kbPanel .settings-title {
   font-size: 18px;
 }

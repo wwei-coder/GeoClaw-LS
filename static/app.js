@@ -8,6 +8,8 @@ const state = {
   selectedPath: "",
   settingsDirty: false,
   kbDocs: [],
+  observabilityEnabled: false,
+  observabilityBusy: false,
 };
 let pageScrollLockCount = 0;
 let isAsking = false;
@@ -279,6 +281,66 @@ function setStatus(text) {
   qs("statusText").textContent = text;
 }
 
+function renderObservabilityButton() {
+  const btn = qs("openObservabilityBtn");
+  if (!btn) return;
+  const enabled = !!state.observabilityEnabled;
+  btn.textContent = state.observabilityBusy
+    ? `观测：${enabled ? "开" : "关"}（切换中）`
+    : `观测：${enabled ? "开" : "关"}`;
+  btn.classList.toggle("btn-green", enabled);
+  btn.classList.toggle("btn-outline", !enabled);
+  btn.disabled = !!state.observabilityBusy;
+  btn.title = enabled ? "点击关闭观测链路以减少运行开销" : "点击开启观测链路用于追踪";
+}
+
+function applyObservabilityPayload(data) {
+  const enabled = !!(data && data.enabled);
+  state.observabilityEnabled = enabled;
+  renderObservabilityButton();
+}
+
+async function loadObservabilityStatus() {
+  try {
+    const data = await api("/api/observability/status");
+    applyObservabilityPayload(data);
+  } catch (_err) {
+    state.observabilityEnabled = false;
+    renderObservabilityButton();
+  }
+}
+
+async function toggleObservability() {
+  if (state.observabilityBusy) return;
+  const targetEnabled = !state.observabilityEnabled;
+  const confirmText = targetEnabled
+    ? "开启观测会增加少量运行开销，确定开启吗？"
+    : "关闭观测可减少运行开销，确定关闭吗？";
+  const confirmTitle = targetEnabled ? "开启观测链路" : "关闭观测链路";
+  if (!(await uiConfirm(confirmText, confirmTitle))) return;
+
+  state.observabilityBusy = true;
+  renderObservabilityButton();
+  setStatus(targetEnabled ? "正在开启观测链路..." : "正在关闭观测链路...");
+  try {
+    const data = await api("/api/observability/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: targetEnabled }),
+    });
+    applyObservabilityPayload(data);
+    if (targetEnabled && data && data.status && data.status.url) {
+      window.open(data.status.url, "_blank", "noopener");
+    }
+  } catch (err) {
+    await uiAlert(`观测链路切换失败: ${err.message}`, "操作失败");
+  } finally {
+    state.observabilityBusy = false;
+    renderObservabilityButton();
+    setStatus("就绪");
+  }
+}
+
 function updateSendButtonState() {
   const btn = qs("sendBtn");
   if (!btn) return;
@@ -340,7 +402,7 @@ function toReadableLabel(raw = "") {
 function formatPathLabel(path = "") {
   const parts = String(path || "").split(".");
   const useful = parts[0] === "config" ? parts.slice(1) : parts;
-  if (!useful.length) return "全部设置";
+  if (!useful.length) return "RAG设置";
   return useful.map((seg) => toReadableLabel(seg) || seg).join(" / ");
 }
 
@@ -445,7 +507,7 @@ function getPrefixDepth(prefix = "") {
 }
 
 function getPrefixLabel(prefix = "") {
-  if (!prefix) return "全部设置";
+  if (!prefix) return "RAG设置";
   const parts = splitConfigPath(prefix);
   const tail = parts[parts.length - 1] || "";
   return toReadableLabel(tail) || tail;
@@ -613,7 +675,7 @@ function renderTree() {
   panel.innerHTML = `
     <div class="tree-item${state.selectedPrefix === "" ? " active" : ""}" data-prefix="" data-has-children="1">
       <span class="tree-caret">${expandedTreePrefixes.has("") ? "▾" : "▸"}</span>
-      <span class="tree-label">全部设置</span>
+      <span class="tree-label">RAG设置</span>
     </div>
     ${expandedTreePrefixes.has("") ? renderNode("") : ""}
   `;
@@ -900,6 +962,9 @@ function bindEvents() {
     qs("settingsPanel").classList.remove("hidden");
     await loadSettings();
   });
+  qs("openObservabilityBtn").addEventListener("click", async () => {
+    await toggleObservability();
+  });
   qs("closeSettingsBtn").addEventListener("click", async () => {
     if (state.settingsDirty && !(await uiConfirm("有未保存修改，确定关闭？", "关闭设置"))) return;
     qs("settingsPanel").classList.add("hidden");
@@ -976,6 +1041,7 @@ function bindEvents() {
 async function init() {
   bindEvents();
   updateSendButtonState();
+  renderObservabilityButton();
   setStatus("初始化中...");
   const data = await api("/api/bootstrap");
   state.sessions = data.sessions || [];
@@ -988,6 +1054,7 @@ async function init() {
   } else {
     history.forEach((m) => renderBubble(m.text, m.role === "user" ? "user" : "assistant"));
   }
+  await loadObservabilityStatus();
   setStatus("就绪");
 }
 

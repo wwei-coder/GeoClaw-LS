@@ -1,10 +1,11 @@
 import asyncio
-import os
+import logging
 import socket
 import sys
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import yaml
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -19,13 +20,15 @@ DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "config.default.yaml"
 RAG_IMPORT_ERROR: Optional[str] = None
 DEFAULT_WEB_PORT = 18765
 PORT_SCAN_LIMIT = 120
+logger = logging.getLogger(__name__)
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+AGENT_CORE_CTOR: Optional[type[Any]] = None
 try:
-    from core.agent_core import AgentCore  # noqa: E402
-except Exception as exc:  # pragma: no cover
-    AgentCore = None  # type: ignore[assignment]
+    from core.agent_core import AgentCore as ImportedAgentCore  # noqa: E402
+    AGENT_CORE_CTOR = ImportedAgentCore
+except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, OSError) as exc:  # pragma: no cover
     RAG_IMPORT_ERROR = str(exc)
 
 COMMON_PREFIXES = (
@@ -96,13 +99,16 @@ class RenameSessionRequest(BaseModel):
 class SaveConfigRequest(BaseModel):
     data: Dict[str, Any]
 
+class ObservabilityToggleRequest(BaseModel):
+    enabled: bool
+
 class RAGBridge:
     def __init__(self) -> None:
         self._agent: Optional[Any] = None
         self._lock = threading.RLock()
 
-    def get_agent(self):
-        if AgentCore is None:
+    def get_agent(self) -> Any:
+        if AGENT_CORE_CTOR is None:
             raise RuntimeError(
                 "RAG 能力加载失败，请检查项目依赖与目录结构。"
                 f" APP_ROOT={APP_ROOT}; import_error={RAG_IMPORT_ERROR or 'unknown'}"
@@ -110,10 +116,10 @@ class RAGBridge:
         if self._agent is None:
             with self._lock:
                 if self._agent is None:
-                    self._agent = AgentCore()
+                    self._agent = AGENT_CORE_CTOR()
         return self._agent
 
-    def with_agent(self, fn):
+    def with_agent(self, fn: Callable[[Any], Any]) -> Any:
         with self._lock:
             return fn(self.get_agent())
 
@@ -124,18 +130,33 @@ class RAGBridge:
                 try:
                     if hasattr(agent, "vector_store") and hasattr(agent.vector_store, "close"):
                         agent.vector_store.close()
-                except Exception:
+                except (AttributeError, OSError, RuntimeError):
                     pass
                 try:
                     if hasattr(agent, "db_manager") and hasattr(agent.db_manager, "close"):
                         agent.db_manager.close()
-                except Exception:
+                except (AttributeError, OSError, RuntimeError):
                     pass
             self._agent = None
 
 
 bridge = RAGBridge()
-app = FastAPI(title="GeoClaw-LS WebUI")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        desired_enabled = _read_observability_enabled_from_config()
+        from utils.phoenix_monitor import launch_phoenix_monitor, shutdown_phoenix_monitor
+        if desired_enabled:
+            launch_phoenix_monitor()
+        else:
+            shutdown_phoenix_monitor()
+    except ImportError as exc:
+        logger.warning("观测链路组件未安装，跳过启动: %s", exc)
+    except OSError as exc:
+        logger.warning("观测链路启动环境不可用，跳过启动: %s", exc)
+    yield
+
+app = FastAPI(title="GeoClaw-LS WebUI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 def read_yaml(path: Path) -> Dict[str, Any]:
@@ -151,6 +172,22 @@ def write_yaml(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+def _read_observability_enabled_from_config() -> bool:
+    data = read_yaml(CONFIG_PATH)
+    obs = data.get("observability", {})
+    if not isinstance(obs, dict):
+        return False
+    return bool(obs.get("enabled", False))
+
+def _write_observability_enabled_to_config(enabled: bool) -> None:
+    data = read_yaml(CONFIG_PATH)
+    obs = data.get("observability")
+    if not isinstance(obs, dict):
+        obs = {}
+    obs["enabled"] = bool(enabled)
+    data["observability"] = obs
+    write_yaml(CONFIG_PATH, data)
 
 def iter_leaf_items(node: Any, prefix: str = "") -> List[Tuple[str, Any]]:
     if isinstance(node, dict):
@@ -225,7 +262,7 @@ def home():
 
 @app.get("/api/bootstrap")
 def bootstrap():
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         sessions = agent.db_manager.get_all_sessions()
         current_id = agent.get_active_session_id()
         history_text = agent.load_history_to_ui(limit=60, session_id=current_id) if current_id else ""
@@ -244,7 +281,7 @@ def chat(req: ChatRequest):
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
 
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         if req.session_id:
             agent.switch_session(req.session_id)
         result = asyncio.run(agent.chat_async(question))
@@ -259,7 +296,7 @@ def chat(req: ChatRequest):
 
 @app.get("/api/sessions")
 def list_sessions():
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         sessions = agent.db_manager.get_all_sessions()
         return {"sessions": [{"id": sid, "title": title} for sid, title, _ in sessions]}
 
@@ -267,7 +304,7 @@ def list_sessions():
 
 @app.post("/api/sessions")
 def create_session(req: CreateSessionRequest):
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         sid = agent.create_new_session(req.title.strip() or "新对话")
         return {"session_id": sid}
 
@@ -275,7 +312,7 @@ def create_session(req: CreateSessionRequest):
 
 @app.post("/api/sessions/{session_id}/switch")
 def switch_session(session_id: int):
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         agent.switch_session(session_id)
         history = agent.load_history_to_ui(limit=60, session_id=session_id)
         return {"session_id": session_id, "history_messages": parse_history_text(history)}
@@ -284,7 +321,7 @@ def switch_session(session_id: int):
 
 @app.patch("/api/sessions/{session_id}")
 def rename_session(session_id: int, req: RenameSessionRequest):
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         title = req.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="标题不能为空")
@@ -295,7 +332,7 @@ def rename_session(session_id: int, req: RenameSessionRequest):
 
 @app.delete("/api/sessions/{session_id}")
 def delete_session(session_id: int):
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         agent.delete_session(session_id)
         sessions = agent.db_manager.get_all_sessions()
         return {
@@ -321,12 +358,12 @@ def get_config():
 def save_config(req: SaveConfigRequest):
     write_yaml(CONFIG_PATH, req.data)
 
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         try:
             temp = req.data.get("models", {}).get("ollama", {}).get("temperature")
             if temp is not None:
                 agent.temperature = float(temp)
-        except Exception:
+        except (TypeError, ValueError):
             pass
         return {"ok": True}
 
@@ -351,7 +388,7 @@ async def import_config(file: UploadFile = File(...)):
     raw = await file.read()
     try:
         loaded = yaml.safe_load(raw.decode("utf-8")) or {}
-    except Exception as e:
+    except (UnicodeDecodeError, yaml.YAMLError, ValueError) as e:
         raise HTTPException(status_code=400, detail=f"解析 YAML 失败: {e}") from e
     if not isinstance(loaded, dict):
         raise HTTPException(status_code=400, detail="模板根节点必须是对象")
@@ -360,7 +397,7 @@ async def import_config(file: UploadFile = File(...)):
 
 @app.post("/api/kb/sync")
 def sync_kb():
-    def _inner(agent: AgentCore):
+    def _inner(agent: Any):
         return agent.sync_knowledge_base_now()
 
     return bridge.with_agent(_inner)
@@ -405,6 +442,54 @@ def system_reset():
     bridge.reset_agent()
     return result
 
+@app.get("/api/observability/status")
+def observability_status():
+    try:
+        from utils.phoenix_monitor import get_phoenix_status
+        status = get_phoenix_status()
+        enabled = bool(status.get("launched") or status.get("starting"))
+        configured_enabled = _read_observability_enabled_from_config()
+        return {
+            "ok": True,
+            "enabled": enabled,
+            "configured_enabled": configured_enabled,
+            "status": status,
+        }
+    except ImportError:
+        return {
+            "ok": True,
+            "enabled": False,
+            "configured_enabled": False,
+            "status": {"launched": False, "starting": False, "url": "http://localhost:6006"},
+        }
+
+@app.post("/api/observability/toggle")
+def toggle_observability(req: ObservabilityToggleRequest):
+    try:
+        from utils.phoenix_monitor import (
+            get_phoenix_status,
+            launch_phoenix_monitor,
+            shutdown_phoenix_monitor,
+        )
+
+        if req.enabled:
+            launch_phoenix_monitor()
+        else:
+            shutdown_phoenix_monitor()
+
+        status = get_phoenix_status()
+        enabled = bool(status.get("launched") or status.get("starting"))
+        _write_observability_enabled_to_config(enabled)
+        return {
+            "ok": True,
+            "enabled": enabled,
+            "configured_enabled": enabled,
+            "status": status,
+        }
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
+        action = "启用" if req.enabled else "关闭"
+        raise HTTPException(status_code=500, detail=f"{action}观测链路失败: {e}") from e
+
 @app.get("/api/health")
 def health():
     return {
@@ -413,30 +498,30 @@ def health():
         "config_path": str(CONFIG_PATH),
         "default_config_path": str(DEFAULT_CONFIG_PATH),
         "config_exists": CONFIG_PATH.exists(),
-        "agent_import_ok": AgentCore is not None,
+        "agent_import_ok": AGENT_CORE_CTOR is not None,
         "agent_import_error": RAG_IMPORT_ERROR,
     }
 
-def _is_port_available(host: str, port: int) -> bool:
+def _is_port_available(bind_host: str, bind_port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind((host, port))
+            sock.bind((bind_host, bind_port))
             return True
         except OSError:
             return False
 
-def _pick_available_port(host: str, preferred_port: int, max_attempts: int) -> int:
+def _pick_available_port(bind_host: str, preferred_port: int, max_attempts: int) -> int:
     for offset in range(max_attempts):
         candidate = preferred_port + offset
-        if _is_port_available(host, candidate):
+        if _is_port_available(bind_host, candidate):
             return candidate
     raise RuntimeError(
         f"端口占用：从 {preferred_port} 起连续 {max_attempts} 个端口均不可用，请释放端口后重试。"
     )
 
 if __name__ == "__main__":
-    host = "127.0.0.1"
-    port = _pick_available_port(host, DEFAULT_WEB_PORT, PORT_SCAN_LIMIT)
-    print(f"[GeoClaw-LS] WebUI 启动地址: http://{host}:{port}/")
-    uvicorn.run("app:app", host=host, port=port, reload=False)
+    server_host = "127.0.0.1"
+    server_port = _pick_available_port(server_host, DEFAULT_WEB_PORT, PORT_SCAN_LIMIT)
+    print(f"[GeoClaw-LS] WebUI 启动地址: http://{server_host}:{server_port}/")
+    uvicorn.run("app:app", host=server_host, port=server_port, reload=False)
