@@ -7,14 +7,17 @@ import contextvars
 from typing import Dict, List, Any, Optional
 from loguru import logger
 from utils.ollama_client import ask_ollama, ask_ollama_async
-from memory.vector_store import VectorStore
+from rag.vector_store import VectorStore
 from memory.database_manager import DatabaseManager
 import core.prompts as prompts
 from core.tools import TOOL_REGISTRY
 from core.graph_agent import GraphAgent
+from agent.task_store import TaskStore
+from agent.task_runner import TaskRunner
+from core.file_workspace import FileWorkspace
 from memory.doc_fingerprint import generate_fingerprint, load_fingerprint, save_fingerprint, diff_fingerprint
-from knowledge.knowledge_loader import load_documents_from_dir
-from knowledge.knowledge_chunker import build_knowledge_chunks
+from rag.loader import load_documents_from_dir
+from rag.chunker import build_knowledge_chunks
 from core.config import (
     DB_PATH,
     DATA_DIR,
@@ -52,6 +55,13 @@ class AgentCore:
         self.user_id = "default_user"
         self.session_id = None # Current session
         self.db_manager = DatabaseManager(DB_PATH)
+        self.task_store = None
+        self.task_runner = None
+        try:
+            self.task_store = TaskStore(self.db_manager)
+            self.task_runner = TaskRunner(self, max_workers=1)
+        except Exception as exc:
+            logger.warning(f"[TaskStore] 初始化失败，将以无持久化模式运行: {exc}")
         self.short_memory: List[str] = []
         self.summary_memory = ""
         self.user_preferences: Dict[str, str] = {} # 用户偏好记忆
@@ -59,8 +69,12 @@ class AgentCore:
 
         self.pending_tool_call = None  # For human-in-the-loop confirmation
         self._kb_sync_lock = threading.RLock()
+        self._execution_lock = threading.RLock()
         self._last_kb_sync_summary: Dict[str, Any] = {"mode": "init"}
         self._request_session_id_var = contextvars.ContextVar("request_session_id", default=None)
+        self.file_workspace = FileWorkspace(root_dir="workspace")
+        self.active_file_id: Optional[str] = None
+        self.active_files: List[Dict[str, Any]] = []
 
         self.vector_store = VectorStore(
             model_name=DEFAULT_EMBEDDING_MODEL,
@@ -77,7 +91,7 @@ class AgentCore:
         else:
             # Load the most recent session (ordered by updated_at DESC)
             self.session_id = sessions[0][0]
-        
+
         # Load context for this session
         self.switch_session(self.session_id)
 
@@ -86,10 +100,10 @@ class AgentCore:
         self.decision = HeuristicDecisionChain(agent_core=self)
         self.retriever = RetrieverChain(vector_store=self.vector_store)
         self.synthesis = SynthesisChain(agent_core=self)
-        
+
         self.small_talk = SmallTalkChain(agent_core=self)
         self.memory_query = MemoryQueryChain(agent_core=self)
-        
+
         # Initialize Graph Agent
         self.graph_agent = GraphAgent(self)
 
@@ -355,9 +369,12 @@ class AgentCore:
         tool_fn = TOOL_REGISTRY.get(tool_name)
         if not tool_fn:
             return f"[错误] 未知工具：{tool_name}"
-        
+
         try:
-            return tool_fn(task, self)
+            result = tool_fn(task, self)
+            if hasattr(result, "to_legacy_text"):
+                return result.to_legacy_text()
+            return str(result)
         except Exception as e:
             logger.error(f"[ToolError] {tool_name} 执行失败: {e}")
             return f"[系统错误] 工具 {tool_name} 执行异常: {str(e)}"
@@ -365,9 +382,9 @@ class AgentCore:
     # -------------------------
     async def _fix_terminology_async(self, answer: str, question: str = "") -> str:
         final_answer = answer
-        
+
         # 1. Check for English words (Optimized: Max 1 retry)
-        if re.search(r"[A-Za-z]{3,}", final_answer): 
+        if re.search(r"[A-Za-z]{3,}", final_answer):
              words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
              disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
              if disallowed:
@@ -390,7 +407,7 @@ class AgentCore:
                 except Exception as e:
                     logger.warning(f"[Terminology] InSAR 术语修正失败，保留当前回答: {e}")
                     return final_answer
-                
+
                 # Re-check English after fix
                 for _ in range(2):
                     words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
@@ -417,14 +434,14 @@ class AgentCore:
                     if "允许保留 InSAR" not in line and "以下是英文单词" not in line
                 ]
                 final_answer = "\n".join(lines).strip()
-                
+
         return final_answer
 
     def _fix_terminology(self, answer: str, question: str = "") -> str:
         final_answer = answer
-        
+
         # 1. Check for English words (Optimized: Max 1 retry)
-        if re.search(r"[A-Za-z]{3,}", final_answer): 
+        if re.search(r"[A-Za-z]{3,}", final_answer):
              words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
              disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
              if disallowed:
@@ -447,7 +464,7 @@ class AgentCore:
                 except Exception as e:
                     logger.warning(f"[Terminology] InSAR 术语修正失败，保留当前回答: {e}")
                     return final_answer
-                
+
                 # Re-check English after fix
                 for _ in range(2):
                     words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
@@ -474,7 +491,7 @@ class AgentCore:
                     if "允许保留 InSAR" not in line and "以下是英文单词" not in line
                 ]
                 final_answer = "\n".join(lines).strip()
-                
+
         return final_answer
 
     def _build_fallback_session_title(self, first_question: str) -> str:
@@ -519,7 +536,17 @@ class AgentCore:
             return sid
         return self.session_id
 
-    async def chat_async(self, question: str, cancel_event=None, stream_callback=None) -> Dict[str, Any]:
+    async def chat_async(
+        self,
+        question: str,
+        cancel_event=None,
+        stream_callback=None,
+        file_id: Optional[str] = None,
+        files: Optional[List[Dict[str, Any]]] = None,
+        task_id: Optional[str] = None,
+        run_mode: str = "sync",
+        resumed_from: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Async version of chat
         """
@@ -530,45 +557,55 @@ class AgentCore:
         token = self._request_session_id_var.set(request_session_id)
         self._active_chat_session_id = request_session_id
         self._active_cancel_event = cancel_event
+        self.active_file_id = (file_id or "").strip() or None
+        self.active_files = list(files or [])
 
         try:
-            if request_session_id:
-                try:
-                    if len(self.short_memory) == 0:
-                         asyncio.create_task(self._auto_rename_session_async(request_session_id, question))
-                except Exception as e:
-                    logger.warning(f"[Session] 异步自动重命名任务创建失败: {e}")
+            with self._execution_lock:
+                if request_session_id:
+                    try:
+                        if len(self.short_memory) == 0:
+                             asyncio.create_task(self._auto_rename_session_async(request_session_id, question))
+                    except Exception as e:
+                        logger.warning(f"[Session] 异步自动重命名任务创建失败: {e}")
 
-            if is_small_talk(question):
-                return await self.small_talk.ainvoke({"question": question})
-            if is_memory_query(question):
-                return await self.memory_query.ainvoke({"question": question})
+                if is_small_talk(question):
+                    return await self.small_talk.ainvoke({"question": question})
+                if is_memory_query(question):
+                    return await self.memory_query.ainvoke({"question": question})
 
-            if self.pending_tool_call:
-                judge_prompt = prompts.CONFIRMATION_JUDGE_PROMPT.format(question=question)
-                intent = (await ask_ollama_async(judge_prompt)).strip().upper()
-                
-                if "YES" in intent:
-                    tool_step = self.pending_tool_call
-                    logger.info(f"[Agent] 用户批准执行: {tool_step['tool']}")
-                    if stream_callback:
-                        stream_callback(f"\n> [系统] 用户已批准，正在执行 {tool_step['tool']}...\n")
-                    
-                    loop = asyncio.get_running_loop()
-                    result_text = await loop.run_in_executor(None, lambda: self.execute_tool_step(tool_step))
-                    
-                    self.pending_tool_call = None
-                    return {"answer": f"已执行操作。结果：{result_text}", "confidence": 1.0, "sources": []}
-                    
-                elif "NO" in intent:
-                    self.pending_tool_call = None
-                    return {"answer": "已取消执行。", "confidence": 0.0, "sources": []}
-                else:
-                    self.pending_tool_call = None
+                if self.pending_tool_call:
+                    judge_prompt = prompts.CONFIRMATION_JUDGE_PROMPT.format(question=question)
+                    intent = (await ask_ollama_async(judge_prompt)).strip().upper()
 
-            self._current_stream_callback = stream_callback
-            result = await self.graph_agent.run_async(question)
-            return result
+                    if "YES" in intent:
+                        tool_step = self.pending_tool_call
+                        logger.info(f"[Agent] 用户批准执行: {tool_step['tool']}")
+                        if stream_callback:
+                            stream_callback(f"\n> [系统] 用户已批准，正在执行 {tool_step['tool']}...\n")
+
+                        loop = asyncio.get_running_loop()
+                        result_text = await loop.run_in_executor(None, lambda: self.execute_tool_step(tool_step))
+
+                        self.pending_tool_call = None
+                        return {"answer": f"已执行操作。结果：{result_text}", "confidence": 1.0, "sources": []}
+
+                    elif "NO" in intent:
+                        self.pending_tool_call = None
+                        return {"answer": "已取消执行。", "confidence": 0.0, "sources": []}
+                    else:
+                        self.pending_tool_call = None
+
+                self._current_stream_callback = stream_callback
+                result = await self.graph_agent.run_async(
+                    question,
+                    file_id=self.active_file_id,
+                    files=self.active_files,
+                    task_id=task_id or "",
+                    run_mode=run_mode or "sync",
+                    resumed_from=resumed_from,
+                )
+                return result
         except Exception as e:
             logger.exception("系统运行出错")
             return {"answer": f"系统运行出错: {str(e)}", "confidence": 0.0, "sources": []}
@@ -577,6 +614,8 @@ class AgentCore:
             self._current_stream_callback = None
             self._active_chat_session_id = None
             self._active_cancel_event = None
+            self.active_file_id = None
+            self.active_files = []
 
     # --------------------------------------------------
     def load_history_to_ui(self, limit: int = 10, session_id: Optional[int] = None) -> str:
@@ -594,7 +633,7 @@ class AgentCore:
                 self.vector_store.close()
         except Exception as e:
             logger.warning(f"[Reset] 关闭向量库句柄失败: {e}")
-        
+
         # 标记为待重置
         from core.reset_handler import mark_for_reset
         mark_for_reset()

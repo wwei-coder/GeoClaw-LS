@@ -1,10 +1,44 @@
 from utils.ollama_client import ask_ollama, ask_ollama_async
 import json
+import re
 from core.config import PLANNER_PROMPT
 from utils.logger import logger
 
+ALLOWED_TOOLS = {"RAG", "MEMORY", "LLM", "CALCULATOR", "DISCOVERY", "DATA_PROFILE", "FILE_INSPECTOR"}
+DATA_TOOLS = {"DATA_PROFILE", "FILE_INSPECTOR"}
+
+
+def _has_file_signal(text: str) -> bool:
+    q = (text or "").lower()
+    keywords = [
+        "file_id",
+        "上传",
+        "已上传",
+        "这个文件",
+        "该文件",
+        "数据文件",
+        "csv",
+        "excel",
+        "xlsx",
+        "xls",
+        "json",
+        "txt",
+        "表格",
+    ]
+    if any(k in q for k in keywords):
+        return True
+    return bool(re.search(r"\bfile[_-]?id\b", q, flags=re.IGNORECASE))
+
+
 def _process_planner_response(raw_response: str, question: str) -> dict:
-    """Helper to process and sanitize LLM response for planning"""
+    """Helper to process and sanitize LLM response for planning.
+
+    容错策略：
+    - 清理 Markdown 代码块与不可见字符；
+    - 解析失败时尝试截取最外层 JSON；
+    - 非法工具自动回退 LLM；
+    - 文件工具在无 file 信号时自动回退 LLM。
+    """
     raw = raw_response.strip()
     
     # Clean up markdown code block syntax more robustly
@@ -46,6 +80,7 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
         steps = []
 
     cleaned = []
+    file_signal = _has_file_signal(question)
     for s in steps:
         if not isinstance(s, dict):
             continue
@@ -65,7 +100,10 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
         if not task or "要做什么" in task or "给工具的输入" in task:
             task = question
             
-        if tool not in {"RAG", "MEMORY", "LLM", "CALCULATOR", "DISCOVERY"}:
+        if tool not in ALLOWED_TOOLS:
+            tool = "LLM"
+        if tool in DATA_TOOLS and not file_signal:
+            logger.info("[Planner] 数据工具缺少文件意图信号，降级为 LLM")
             tool = "LLM"
         cleaned.append({"tool": tool, "task": task})
 

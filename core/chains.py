@@ -15,6 +15,23 @@ from core.planner import plan_task, plan_task_async
 from memory.summary_memory import summarize_dialog
 from core.question_classifier import is_complex_question, is_follow_up_question, is_follow_up_question_async
 from core.context_judge import judge_context_relevance, judge_context_relevance_async
+from rag.diagnostics import record_retrieval_metrics
+from rag.quality import (
+    evaluate_retrieval_quality,
+    fast_path_target,
+    is_fast_path_good_enough,
+    is_low_retrieval_quality,
+)
+from rag.retriever import (
+    append_unique_chunks,
+    apply_question_filters,
+    build_dual_queries,
+    build_dual_queries_async,
+    parse_metadata_filter,
+    rerank_merged_chunks,
+    rewrite_query,
+    rewrite_query_async,
+)
 from core.config import (
     MAX_CONTEXT_LEN,
     MAX_HISTORY_ROUNDS,
@@ -290,189 +307,75 @@ class RetrieverChain(Chain):
         return ["kb_chunks", "sources", "trace", "retrieval_quality"]
 
     def _parse_metadata_filter(self, filter_json: str) -> Optional[Dict[str, Any]]:
-        cleaned = re.sub(r"```json|```", "", (filter_json or "")).strip()
-        if not cleaned or cleaned == "{}":
-            return None
-        import json
-        extracted_filter = json.loads(cleaned)
-        if not extracted_filter:
-            return None
-
-        def _is_empty_value(v: Any) -> bool:
-            if v is None:
-                return True
-            if isinstance(v, str):
-                return len(v.strip()) == 0
-            if isinstance(v, (list, tuple, set, dict)):
-                return len(v) == 0
-            return False
-
-        conditions = []
-        for k, v in extracted_filter.items():
-            if _is_empty_value(v):
-                continue
-            if k == "doc_name" and isinstance(v, str):
-                value = v.strip()
-                if value:
-                    conditions.append({k: {"$contains": value}})
-            else:
-                conditions.append({k: v})
-        if len(conditions) == 1:
-            return conditions[0]
-        if len(conditions) > 1:
-            return {"$and": conditions}
-        return None
+        return parse_metadata_filter(filter_json)
 
     def _append_unique_chunks(self, base_chunks: List[Dict[str, Any]], new_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen_ids = {c.get("id") for c in base_chunks if c.get("id")}
-        merged = list(base_chunks)
-        for c in new_chunks:
-            cid = c.get("id")
-            if cid:
-                if cid in seen_ids:
-                    continue
-                seen_ids.add(cid)
-            merged.append(c)
-        return merged
+        return append_unique_chunks(base_chunks, new_chunks)
 
     def _apply_question_filters(self, question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        kb_chunks = list(chunks)
-        ascii_terms = re.findall(r"[A-Za-z0-9-]+", question)
-        if ascii_terms:
-            filtered = [c for c in kb_chunks if any(t in (c.get("content", "") or "") for t in ascii_terms)]
-            if filtered:
-                kb_chunks = filtered
-        if "毕业设计" in question:
-            filtered = [c for c in kb_chunks if "毕业设计" in (c.get("doc_name", "") or "")]
-            if filtered:
-                kb_chunks = filtered
-        return kb_chunks
+        return apply_question_filters(question, chunks)
 
     def _chunk_similarity_score(self, chunk: Dict[str, Any]) -> float:
-        if "model_score" in chunk:
-            score = 1.0 / (1.0 + math.exp(-float(chunk["model_score"])))
-            return max(0.0, min(1.0, score))
-        if "score" in chunk:
-            score = float(chunk["score"])
-            return max(0.0, min(1.0, score))
-        if "distance" in chunk:
-            return 1.0 / (1.0 + max(0.0, float(chunk["distance"])))
-        if "rrf_score" in chunk:
-            score = float(chunk["rrf_score"]) * 120.0
-            return max(0.0, min(1.0, score))
-        return 0.0
+        from rag.quality import chunk_similarity_score
+
+        return chunk_similarity_score(chunk)
 
     def _evaluate_quality(self, chunks: List[Dict[str, Any]], top_k: int) -> Dict[str, Any]:
-        hit_count = len(chunks)
-        source_count = len({c.get("doc_name", "") for c in chunks if c.get("doc_name")})
-        hit_score = min(1.0, hit_count / max(1, top_k))
-        similarity_score = 0.0
-        if chunks:
-            similarity_score = sum(self._chunk_similarity_score(c) for c in chunks) / len(chunks)
-        source_diversity = 0.0
-        if hit_count > 0:
-            source_diversity = source_count / hit_count
-        score = (0.45 * hit_score) + (0.40 * similarity_score) + (0.15 * source_diversity)
-        return {
-            "score": max(0.0, min(1.0, score)),
-            "hit_count": hit_count,
-            "avg_similarity": round(similarity_score, 4),
-            "source_diversity": round(source_diversity, 4),
-            "source_count": source_count
-        }
+        return evaluate_retrieval_quality(chunks, top_k)
 
     def _is_low_quality(self, quality: Dict[str, Any]) -> bool:
-        return (
-            quality["score"] < RAG_QUALITY_THRESHOLD
-            or quality["hit_count"] < RAG_QUALITY_MIN_HITS
-            or quality["avg_similarity"] < RAG_QUALITY_MIN_SIMILARITY
-            or quality["source_diversity"] < RAG_QUALITY_MIN_SOURCE_DIVERSITY
+        return is_low_retrieval_quality(
+            quality,
+            quality_threshold=RAG_QUALITY_THRESHOLD,
+            min_hits=RAG_QUALITY_MIN_HITS,
+            min_similarity=RAG_QUALITY_MIN_SIMILARITY,
+            min_source_diversity=RAG_QUALITY_MIN_SOURCE_DIVERSITY,
         )
 
     def _rerank_merged_chunks(self, query: str, chunks: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-        if not chunks:
-            return []
         reranker = getattr(self.vector_store, "reranker", None)
-        if not reranker:
-            return chunks[:top_k]
-        try:
-            reranked = reranker.rerank(query, chunks[: max(top_k * 3, top_k)])
-            return reranked[:top_k]
-        except Exception as e:
-            logger.warning(f"[Retriever] Rerank merged chunks failed, fallback original ranking: {e}")
-            return chunks[:top_k]
+        return rerank_merged_chunks(query, chunks, top_k=top_k, reranker=reranker)
 
     def _rewrite_query(self, question: str) -> str:
-        rewrite_prompt = prompts.SEMANTIC_REWRITE_PROMPT.format(question=question)
-        rewritten = ask_ollama(rewrite_prompt, temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE).strip()
-        return rewritten if 0 < len(rewritten) <= 120 else question
+        return rewrite_query(
+            question,
+            ask_fn=ask_ollama,
+            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
+        )
 
     async def _rewrite_query_async(self, question: str) -> str:
-        rewrite_prompt = prompts.SEMANTIC_REWRITE_PROMPT.format(question=question)
-        rewritten = (await ask_ollama_async(rewrite_prompt, temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE)).strip()
-        return rewritten if 0 < len(rewritten) <= 120 else question
+        return await rewrite_query_async(
+            question,
+            ask_async_fn=ask_ollama_async,
+            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
+        )
 
     def _build_dual_queries(self, question: str) -> List[str]:
-        semantic_query = question
-        keyword_query = question
-        try:
-            semantic_candidate = ask_ollama(
-                prompts.SEMANTIC_REWRITE_PROMPT.format(question=question),
-                temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE
-            ).strip()
-            if 0 < len(semantic_candidate) <= 120:
-                semantic_query = semantic_candidate
-        except Exception as e:
-            logger.warning(f"[Retriever] 语义改写失败，回退原问题: {e}")
-        try:
-            keywords = ask_ollama(
-                prompts.KEYWORD_EXPANSION_PROMPT.format(question=question),
-                temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION
-            ).strip()
-            if 0 < len(keywords) <= 80:
-                keyword_query = f"{question} {keywords}"
-        except Exception as e:
-            logger.warning(f"[Retriever] 关键词扩展失败，回退原问题: {e}")
-        queries: List[str] = []
-        for q in (semantic_query, keyword_query):
-            q = (q or "").strip()
-            if q and q not in queries:
-                queries.append(q)
-        return queries if queries else [question]
+        return build_dual_queries(
+            question,
+            ask_fn=ask_ollama,
+            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            keyword_expansion_prompt=prompts.KEYWORD_EXPANSION_PROMPT,
+            semantic_rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
+            keyword_expansion_temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION,
+        )
 
     async def _build_dual_queries_async(self, question: str) -> List[str]:
-        semantic_query = question
-        keyword_query = question
-        try:
-            semantic_task = ask_ollama_async(
-                prompts.SEMANTIC_REWRITE_PROMPT.format(question=question),
-                temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE
-            )
-            keyword_task = ask_ollama_async(
-                prompts.KEYWORD_EXPANSION_PROMPT.format(question=question),
-                temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION
-            )
-            semantic_candidate, keywords = await asyncio.gather(semantic_task, keyword_task)
-            semantic_candidate = (semantic_candidate or "").strip()
-            keywords = (keywords or "").strip()
-            if 0 < len(semantic_candidate) <= 120:
-                semantic_query = semantic_candidate
-            if 0 < len(keywords) <= 80:
-                keyword_query = f"{question} {keywords}"
-        except Exception as e:
-            logger.warning(f"[Retriever] 异步双查询构建失败，回退原问题: {e}")
-        queries: List[str] = []
-        for q in (semantic_query, keyword_query):
-            q = (q or "").strip()
-            if q and q not in queries:
-                queries.append(q)
-        return queries if queries else [question]
+        return await build_dual_queries_async(
+            question,
+            ask_async_fn=ask_ollama_async,
+            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            keyword_expansion_prompt=prompts.KEYWORD_EXPANSION_PROMPT,
+            semantic_rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
+            keyword_expansion_temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION,
+        )
 
     def _ensure_metrics(self):
-        if hasattr(self, "_metrics_lock") and hasattr(self, "_metrics_window"):
-            return
-        self._metrics_lock = threading.Lock()
-        self._metrics_window = deque(maxlen=max(20, RETRIEVAL_METRICS_WINDOW))
+        from rag.diagnostics import ensure_metrics_state
+
+        ensure_metrics_state(self, RETRIEVAL_METRICS_WINDOW)
 
     def _record_retrieval_metrics(
         self,
@@ -484,58 +387,31 @@ class RetrieverChain(Chain):
         quality: Dict[str, Any],
         result_count: int
     ):
-        if not RETRIEVAL_METRICS_ENABLED:
-            return
-        self._ensure_metrics()
-        runtime_stats = {}
-        try:
-            runtime_stats = self.vector_store.get_runtime_stats()
-        except Exception:
-            runtime_stats = {}
-        event = {
-            "ts": time.time(),
-            "duration_ms": round(float(duration_ms), 3),
-            "question_len": len(question or ""),
-            "query_count": len(search_queries or []),
-            "filter_used": bool(metadata_filter),
-            "expanded": bool(expanded),
-            "result_count": int(result_count),
-            "quality_score": float(quality.get("score", 0.0)),
-            "avg_similarity": float(quality.get("avg_similarity", 0.0)),
-            "source_diversity": float(quality.get("source_diversity", 0.0)),
-            "cache_hit_rate": runtime_stats.get("cache_hit_rate", 0.0),
-            "cache_size": runtime_stats.get("cache_size", 0),
-            "kb_version": runtime_stats.get("kb_version", "")
-        }
-        with self._metrics_lock:
-            self._metrics_window.append(event)
-            window = list(self._metrics_window)
-        if window:
-            avg_duration = sum(x["duration_ms"] for x in window) / len(window)
-            avg_quality = sum(x["quality_score"] for x in window) / len(window)
-            event["window_size"] = len(window)
-            event["window_avg_duration_ms"] = round(avg_duration, 3)
-            event["window_avg_quality"] = round(avg_quality, 4)
-        try:
-            log_path = RETRIEVAL_METRICS_LOG_PATH
-            os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except Exception as e:
-            logger.warning(f"[Retriever] 指标写入失败: {e}")
-
-    def _fast_path_target(self) -> float:
-        return max(
-            RAG_QUALITY_THRESHOLD,
-            min(1.0, RAG_QUALITY_THRESHOLD + RETRIEVAL_FAST_PATH_QUALITY_MARGIN)
+        record_retrieval_metrics(
+            self,
+            enabled=RETRIEVAL_METRICS_ENABLED,
+            window_size=RETRIEVAL_METRICS_WINDOW,
+            log_path=RETRIEVAL_METRICS_LOG_PATH,
+            vector_store=self.vector_store,
+            duration_ms=duration_ms,
+            question=question,
+            search_queries=search_queries,
+            metadata_filter=metadata_filter,
+            expanded=expanded,
+            quality=quality,
+            result_count=result_count,
         )
 
+    def _fast_path_target(self) -> float:
+        return fast_path_target(RAG_QUALITY_THRESHOLD, RETRIEVAL_FAST_PATH_QUALITY_MARGIN)
+
     def _is_fast_path_good_enough(self, quality: Dict[str, Any]) -> bool:
-        return (
-            quality.get("score", 0.0) >= self._fast_path_target()
-            and quality.get("hit_count", 0) >= RAG_QUALITY_MIN_HITS
-            and quality.get("avg_similarity", 0.0) >= RAG_QUALITY_MIN_SIMILARITY
-            and quality.get("source_diversity", 0.0) >= RAG_QUALITY_MIN_SOURCE_DIVERSITY
+        return is_fast_path_good_enough(
+            quality,
+            target_score=self._fast_path_target(),
+            min_hits=RAG_QUALITY_MIN_HITS,
+            min_similarity=RAG_QUALITY_MIN_SIMILARITY,
+            min_source_diversity=RAG_QUALITY_MIN_SOURCE_DIVERSITY,
         )
 
     def _call(self, inputs: Dict[str, Any], _run_manager: Optional[CallbackManagerForChainRun] = None) -> Dict[str, Any]:

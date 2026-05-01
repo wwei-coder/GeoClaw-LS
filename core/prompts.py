@@ -1,212 +1,24 @@
 from core.config import PROMPTS
-# Fallback defaults are kept here in case config.yaml is missing or incomplete,
-# but ideally these should be loaded from config.yaml via core.config.PROMPTS
-SEMANTIC_REWRITE_PROMPT = PROMPTS.get("semantic_rewrite", """
-你是语义检索改写专家。请将用户问题改写为一条更适合语义向量检索的查询语句。
+"""Prompt constants loaded from YAML-first configuration."""
 
-要求：
-1. 保留原始意图，不改变任务目标。
-2. 可补充同义表达与上下位概念，但不要引入新事实。
-3. 输出一行文本，不要解释，不要分点。
+def _prompt(key: str, fallback: str = "") -> str:
+    value = PROMPTS.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return fallback
 
-用户问题：{question}
-改写查询：
-""")
-
-KEYWORD_EXPANSION_PROMPT = PROMPTS.get("keyword_expansion", """
-你是一名专业的搜索查询优化专家。你的目标是根据用户的输入，生成最有效的搜索引擎关键词，以便从向量数据库或文档库中检索相关信息。
-
-请遵循以下步骤：
-1. 分析用户问题的核心意图和关键实体（如地质术语、地点、灾害类型等）。
-2. 提取 2-5 个核心搜索关键词。
-3. 关键词应包含同义词或专业术语，以提高召回率。
-4. 仅输出关键词，用空格分隔，严禁包含任何解释或其他文字。
-
-用户问题：{question}
-关键词：
-""")
-
-QUERY_EXPANSION_PROMPT = KEYWORD_EXPANSION_PROMPT
-
-SMALL_TALK_PROMPT = PROMPTS.get("small_talk", """
-你是一个运行在本地的地质滑坡领域智能专业助手。你的底层基于 Ollama 模型，结合了 RAG（检索增强生成）和长期记忆能力。
-
-当用户进行打招呼、询问身份或进行非专业闲聊时，请遵循以下原则：
-1. **身份定位**：你是地质滑坡防治领域的专家助手，专业、严谨但态度亲和。
-2. **回答策略**：
-   - 简短自我介绍。
-   - 引导用户提问与地质滑坡、地质灾害防治、监测预警等相关的问题。
-3. **语言风格**：使用中文，简洁明了。
-
-用户输入：{question}
-""")
-
-FOLLOW_UP_JUDGE_PROMPT = PROMPTS.get("follow_up_judge", """
-你是一个对话上下文分析专家。你的任务是判断用户的【当前问题】是否是基于【对话摘要】的延续，且属于“地质专业内容”的深入探讨。
-
-判断标准：
-1. **YES**：当前问题包含指代词（如“它”、“这个”、“那里”），且必须结合上一轮对话才能理解；或者当前问题是对上一轮回复的直接追问、质疑或补充。
-2. **NO**：当前问题是一个全新的话题，完整的独立问题，或者与上一轮对话的地质内容毫无关联（如突然问天气、问代码等）。
-
-请只输出 YES 或 NO。
-
-【对话摘要】
-{summary}
-
-【当前问题】
-{question}
-""")
-
-FINAL_ANSWER_PROMPT = PROMPTS.get("final_answer", """
-你是一个地质滑坡防治领域的资深专家助手。请基于提供的【工具结果】和【可引用资料】（Knowledge Base），回答用户的【当前问题】。
-
-### 回答原则
-1. **基于事实**：严格基于提供的资料作答。如果资料中未提及，请明确说明“资料未明确提及”，严禁编造事实。
-2. **结构清晰**：使用 Markdown 格式，分点陈述，逻辑清晰。
-3. **引用规范**：在关键结论或数据后，使用括号标注来源文档（例如：(来源: xxx.pdf)）。不要在回答末尾罗列参考文献列表。
-4. **代码解释**：如果【工具结果】包含 Python 代码执行结果，请用通俗易懂的语言解释代码逻辑和结果含义。
-5. **定义类问题**：先给出简练的定义，再展开阐述核心特征或分类。
-
-### 输入信息
-【当前问题】
-{question}
-
-【工具结果】
-{step_results}
-
-【可引用资料】
-{kb_evidence}
-
-### 你的回答
-""")
-
-REWRITE_PROMPT = PROMPTS.get("rewrite", """
-你是一个专业的科技文献翻译与润色专家。请将以下文本中的英文单词、短语及缩写翻译为标准的中文地质专业术语。
-
-### 约束条件
-1. **保留特定缩写**：仅保留 "InSAR" 和 "SAR" 这两个缩写，不做翻译。
-2. **准确翻译**：其他所有英文必须翻译为中文，确保术语准确（例如 "deformation" -> "形变", "landslide" -> "滑坡"）。
-3. **保持原意**：严禁改变原文的逻辑、语意和结构。
-4. **严禁扩写**：不要添加任何原文不存在的信息或解释。
-
-【原文】
-{text}
-
-【全中文改写结果】
-""")
-
-FIX_INSAR_PROMPT = PROMPTS.get("fix_insar", """
-你是一个严谨的地质滑坡监测专家。请审查并修正以下回答，重点修正技术定义错误和无关内容。
-
-### 修正规则
-1. **InSAR 定义**：InSAR 必须解释为“干涉合成孔径雷达（InSAR）”。严禁将其解释为热红外、光学、多光谱或其他不相关的技术。
-2. **去除非相关内容**：删除所有与用户问题无关的通用性描述（如 AI 发展史、通用大模型介绍等），只保留针对地质滑坡领域的具体内容。
-3. **实事求是**：如果资料未提及某项内容（如具体的形变速率、特定的治理措施），请修正为“资料未明确提及”，严禁编造数据。
-4. **格式保持**：保持原有的 Markdown 结构，仅修改内容。
-
-【问题】
-{question}
-
-【待修正回答】
-{answer}
-
-【修正后的回答】
-""")
-
-DISCOVERY_PROMPT = PROMPTS.get("discovery", """
-你是一个地质滑坡领域的“科研助手”，专注于从现有文献中发现新知识、新视角或潜在的关联。
-
-请对以下【检索到的文献片段】进行深度的**交叉分析**（Cross-Analysis），而非简单的摘要。
-
-### 分析维度
-1. **因果链挖掘**：文档 A 提到的某种地质现象，是否可能是文档 B 中描述的某种机制的后果？或者文档 B 的治理措施是否能解决文档 A 的问题？
-2. **跨场景共性**：在不同区域（不同文档）的滑坡案例中，是否存在被忽视的共同诱因或前兆模式？
-3. **矛盾与缺口**：现有资料中是否存在相互矛盾的结论？或者是否存在现有理论无法解释的数据缺口？基于此提出合理的科学假设。
-
-### 输出要求
-请输出一份【深度洞察报告】，包含以下部分：
-1. **交叉证据分析**：具体分析不同文档间的联系，必须明确引用文档名（如《xxx.pdf》）。
-2. **潜在规律发现**：基于多源信息归纳出的规律或模式。
-3. **科学假设提出**：基于缺口或矛盾，推导出新的科学假设或研究方向。
-
-**注意**：如果资料内容不足以支持深度推导，请诚实回答“现有资料过于分散，不足以支持深度交叉分析”。
-
-【检索到的文献片段】
-{kb_evidence}
-
-【探索方向】
-{question}
-""")
-
-CONFIRMATION_JUDGE_PROMPT = PROMPTS.get("confirmation_judge", """
-你是一个意图识别专家。Agent 之前请求用户“批准”执行某项敏感操作（如运行代码、修改文件）。
-请根据用户的【最新回复】判断用户的意图。
-
-### 判断类别
-1. **YES**：用户明确表示同意、确认、批准、开始、继续，或使用积极肯定的词汇（如“好的”、“行”、“ok”、“yes”、“go”）。
-2. **NO**：用户明确表示拒绝、取消、停止、不同意，或使用消极否定的词汇（如“不行”、“no”、“cancel”、“stop”）。
-3. **UNRELATED**：用户的回复与批准操作无关，是在提出新问题、闲聊，或者回复内容模糊不清无法判断意图。
-
-请只输出一个词：YES、NO 或 UNRELATED。
-
-【最新回复】
-{question}
-""")
-
-REVIEW_PROMPT = PROMPTS.get("review", """
-你是一个严格的质量审核员（Reviewer）。你的任务是检查 Agent 的回答是否有效地解决了用户的问题。
-
-### 审核标准
-1. **相关性**：回答是否直接针对用户的问题？是否存在答非所问？
-2. **准确性**：回答是否存在明显的事实错误、逻辑矛盾或幻觉？
-3. **完整性**：
-   - 如果问题涉及计算，是否有计算过程或结果？
-   - 如果问题需要检索，且资料库中有相关信息，Agent 是否遗漏了？
-4. **诚实性**：如果资料确实缺失，Agent 是否诚实地回答“未找到相关资料”，而不是编造？
-
-### 输出格式
-请输出严格的 JSON 格式，不要包含 Markdown 代码块标记（```json ... ```）：
-{{
-    "status": "PASS",  // 或 "FAIL"
-    "reason": "如果不通过，请简述原因（10字以内）；如果通过，留空",
-    "suggestion": "如果不通过，请给出具体的修正建议（如：尝试用 CALCULATOR 工具、尝试重新检索关键词 xxx）"
-}}
-
-### 注意事项
-- 如果回答已经合格，或者受限于资料确实无法回答，请直接 **PASS**。
-- 只有在发现**严重**错误、遗漏或可以显著改进的地方时才 **FAIL**。
-- 严禁对“闲聊”或“无法回答”的情况进行死循环。如果 Agent 已经尽力了，请 PASS。
-
-用户问题：
-{question}
-
-Agent 回答：
-{answer}
-""")
-
-METADATA_FILTER_PROMPT = PROMPTS.get("metadata_filter", """
-你是一个元数据提取专家。请分析用户问题，提取出检索时需要用到的过滤条件（Filter）。
-
-### 可用元数据字段
-1. **type** (文档类型)：可能的取值有 "report" (报告), "paper" (论文), "news" (新闻), "standard" (标准/规范), "data" (数据/表格), "knowledge" (通用知识)。
-2. **year** (年份)：提取 4 位数字年份（如 2023）。
-3. **doc_name** (文档名关键词)：如果用户明确指定了文件名或来源（如“在xx报告中查找”），提取文件名关键词。
-
-### 提取规则
-1. 仅提取用户**明确**提到的限制条件。不要猜测或推断。
-2. 如果用户没有提到任何限制条件，返回空字典。
-3. 输出严格的 JSON 格式，不要包含 Markdown 代码块标记。
-
-### 示例
-用户：查找2023年的滑坡数据
-输出：{{"year": 2023, "type": "data"}}
-
-用户：在《地质灾害防治条例》中关于应急预案的内容
-输出：{{"doc_name": "地质灾害防治条例"}}
-
-用户：滑坡的定义是什么
-输出：{{}}
-
-用户：{question}
-输出：
-""")
+SEMANTIC_REWRITE_PROMPT = _prompt("semantic_rewrite", "用户问题：{question}\n改写查询：")
+KEYWORD_EXPANSION_PROMPT = _prompt("keyword_expansion", "用户问题：{question}\n关键词：")
+QUERY_EXPANSION_PROMPT = _prompt("query_expansion", KEYWORD_EXPANSION_PROMPT)
+SMALL_TALK_PROMPT = _prompt("small_talk", "用户输入：{question}")
+FOLLOW_UP_JUDGE_PROMPT = _prompt("follow_up_judge", "【对话摘要】\n{summary}\n【当前问题】\n{question}")
+FINAL_ANSWER_PROMPT = _prompt(
+    "final_answer",
+    "【当前问题】\n{question}\n【工具结果】\n{step_results}\n【可引用资料】\n{kb_evidence}\n### 你的回答",
+)
+REWRITE_PROMPT = _prompt("rewrite", "【原文】\n{text}\n【全中文改写结果】")
+FIX_INSAR_PROMPT = _prompt("fix_insar", "【问题】\n{question}\n【待修正回答】\n{answer}\n【修正后的回答】")
+DISCOVERY_PROMPT = _prompt("discovery", "【检索到的文献片段】\n{kb_evidence}\n【探索方向】\n{question}")
+CONFIRMATION_JUDGE_PROMPT = _prompt("confirmation_judge", "【最新回复】\n{question}")
+REVIEW_PROMPT = _prompt("review", "用户问题：\n{question}\nAgent 回答：\n{answer}")
+METADATA_FILTER_PROMPT = _prompt("metadata_filter", "用户：{question}\n输出：")

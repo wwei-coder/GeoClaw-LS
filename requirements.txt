@@ -17,3 +17,5 @@ loguru
 httpx
 arize-phoenix
 openinference-instrumentation-langchain
+openpyxl
+pytest>=8.0.0

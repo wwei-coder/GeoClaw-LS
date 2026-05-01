@@ -50,15 +50,28 @@
         </div>
       </header>
 
-      <section id="chatArea" class="chat-area"></section>
+      <div class="workspace-body">
+        <section id="chatArea" class="chat-area"></section>
+        <aside id="taskWorkbench" class="task-workbench">
+          <div class="task-workbench-title">任务工作台</div>
+          <div class="task-workbench-sub">最近任务</div>
+          <div id="taskList" class="task-list"></div>
+          <div class="task-workbench-sub">任务详情</div>
+          <div id="taskDetail" class="task-detail">暂无任务</div>
+        </aside>
+      </div>
 
       <footer class="input-box">
         <div class="editor-row">
           <textarea id="questionInput" placeholder="输入你的问题，Enter发送，Shift+Enter换行"></textarea>
           <div class="send-col">
+            <button id="uploadDataBtn" class="btn btn-outline small" type="button">上传数据</button>
+            <button id="sendBgBtn" class="btn btn-outline small" type="button">后台执行</button>
             <button id="sendBtn" class="btn btn-green">发送</button>
           </div>
         </div>
+        <div id="uploadHint" class="upload-hint">支持 .csv/.xlsx/.xls/.txt/.json，上传后可直接输入“分析这个文件”。</div>
+        <input id="dataFileInput" type="file" accept=".csv,.xlsx,.xls,.txt,.json" class="hidden" />
       </footer>
     </main>
   </div>

@@ -10,11 +10,16 @@ const state = {
   kbDocs: [],
   observabilityEnabled: false,
   observabilityBusy: false,
+  latestUpload: null,
+  tasks: [],
+  currentTaskId: "",
+  currentTaskDetail: null,
 };
 let pageScrollLockCount = 0;
 let isAsking = false;
 let activeChatController = null;
 let activePendingBubble = null;
+let taskPollTimer = null;
 let expandedTreePrefixes = new Set([""]);
 const PATH_SEGMENT_LABELS = {
   common: "常用设置",
@@ -538,6 +543,269 @@ function renderBubble(text, role = "assistant") {
   return div;
 }
 
+function formatStepStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "success") return "成功";
+  if (s === "failed") return "失败";
+  if (s === "running") return "执行中";
+  if (s === "skipped") return "跳过";
+  return "待执行";
+}
+
+function formatTaskStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "success") return "成功";
+  if (s === "partial") return "部分成功";
+  if (s === "failed") return "失败";
+  if (s === "running") return "执行中";
+  if (s === "canceled") return "已取消";
+  return "待执行";
+}
+
+function formatProgress(progress) {
+  const p = progress && typeof progress.percent === "number" ? progress.percent : 0;
+  return `${Math.max(0, Math.min(100, Math.round(p)))}%`;
+}
+
+function renderExecutionPanel(data, anchorBubble) {
+  const chat = qs("chatArea");
+  if (!chat || !anchorBubble) return;
+  const trace = Array.isArray(data.execution_trace) ? data.execution_trace : [];
+  const steps = Array.isArray(data.steps) ? data.steps : [];
+  if (!trace.length && !steps.length) return;
+
+  const panel = document.createElement("div");
+  panel.className = "execution-panel";
+  const title = document.createElement("div");
+  title.className = "execution-title";
+  title.textContent = `执行过程（${steps.length || trace.length} 步）`;
+  panel.appendChild(title);
+
+  const list = document.createElement("ul");
+  list.className = "execution-list";
+  const sourceItems = steps.length ? steps : trace;
+  sourceItems.forEach((item, idx) => {
+    const li = document.createElement("li");
+    const toolName = item.tool_name || item.tool || "UNKNOWN";
+    const instruction = item.instruction || item.task || "";
+    const statusText = formatStepStatus(item.status);
+    const errorText = item.error ? `：${item.error}` : "";
+    li.textContent = `${idx + 1}. ${toolName} ${statusText}${instruction ? ` - ${instruction}` : ""}${errorText}`;
+    list.appendChild(li);
+  });
+  panel.appendChild(list);
+
+  chat.appendChild(panel);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function renderArtifacts(data) {
+  const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+  if (!artifacts.length) return;
+  const links = artifacts
+    .map((a) => {
+      const name = escapeHtml(a.name || a.id || "分析产物");
+      const url = a.url || (a.id ? `/api/artifacts/${encodeURIComponent(a.id)}` : "");
+      if (!url) return "";
+      return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${name}</a>`;
+    })
+    .filter(Boolean);
+  if (!links.length) return;
+  renderBubble(`分析产物：${links.join("，")}`, "system");
+}
+
+function renderTaskPanel() {
+  const listEl = qs("taskList");
+  if (!listEl) return;
+  const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+  if (!tasks.length) {
+    listEl.innerHTML = `<div class="task-empty">暂无任务</div>`;
+    return;
+  }
+  listEl.innerHTML = tasks
+    .map((t) => {
+      const id = String(t.id || "");
+      const active = id && id === state.currentTaskId ? " active" : "";
+      const q = escapeHtml(String(t.user_query || "未命名任务"));
+      const status = escapeHtml(formatTaskStatus(t.status));
+      return `<button class="task-item${active}" data-task-id="${escapeAttr(id)}" title="${q}"><span class="task-item-q">${q}</span><span class="task-item-status">${status}</span></button>`;
+    })
+    .join("");
+}
+
+function renderTaskDetail() {
+  const detailEl = qs("taskDetail");
+  if (!detailEl) return;
+  const detail = state.currentTaskDetail;
+  if (!detail || !detail.task) {
+    detailEl.innerHTML = "暂无任务";
+    return;
+  }
+  const task = detail.task || {};
+  const steps = Array.isArray(detail.steps) ? detail.steps : [];
+  const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : [];
+  const progress = detail.progress || {};
+  const isRunning = !!detail.is_running;
+  const cancelRequested = !!detail.cancel_requested;
+  const statusRaw = String(task.status || "").toLowerCase();
+  const answerPreview = escapeHtml(String(task.answer_preview || ""));
+  const stepsHtml = steps.length
+    ? `<ul>${steps
+        .map((s, i) => {
+          const tool = escapeHtml(String(s.tool_name || s.tool || "UNKNOWN"));
+          const status = escapeHtml(formatStepStatus(s.status));
+          const instruction = escapeHtml(String(s.instruction || s.task || ""));
+          return `<li>${i + 1}. ${tool} ${status}${instruction ? ` - ${instruction}` : ""}</li>`;
+        })
+        .join("")}</ul>`
+    : `<div class="task-empty">暂无步骤</div>`;
+  const artifactsHtml = artifacts.length
+    ? `<ul>${artifacts
+        .map((a) => {
+          const name = escapeHtml(String(a.name || a.id || "产物"));
+          const type = escapeHtml(String(a.type || a.kind || "unknown"));
+          const url = a.download_url || a.url || (a.id ? `/api/artifacts/${encodeURIComponent(a.id)}` : "");
+          const link = url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">下载</a>` : "";
+          return `<li>${name}（${type}）${link ? ` - ${link}` : ""}</li>`;
+        })
+        .join("")}</ul>`
+    : `<div class="task-empty">暂无产物</div>`;
+  const actions = [];
+  if (isRunning) {
+    actions.push(`<button class="btn btn-outline small" data-task-action="cancel" data-task-id="${escapeAttr(String(task.id || ""))}" ${cancelRequested ? "disabled" : ""}>${cancelRequested ? "取消中" : "取消任务"}</button>`);
+  }
+  if (statusRaw === "failed" || statusRaw === "partial") {
+    actions.push(`<button class="btn btn-outline small" data-task-action="retry" data-task-id="${escapeAttr(String(task.id || ""))}">重试任务</button>`);
+  }
+  if (statusRaw === "canceled" || statusRaw === "partial" || statusRaw === "failed") {
+    actions.push(`<button class="btn btn-outline small" data-task-action="resume" data-task-id="${escapeAttr(String(task.id || ""))}">继续任务</button>`);
+  }
+  detailEl.innerHTML = `
+    <div class="task-detail-block"><strong>问题：</strong>${escapeHtml(String(task.user_query || ""))}</div>
+    <div class="task-detail-block"><strong>状态：</strong>${escapeHtml(formatTaskStatus(task.status))}</div>
+    <div class="task-detail-block"><strong>进度：</strong>${escapeHtml(formatProgress(progress))}</div>
+    <div class="task-detail-block"><strong>回答摘要：</strong>${answerPreview || "暂无"}</div>
+    <div class="task-detail-block task-detail-actions">${actions.join(" ") || "暂无可用操作"}</div>
+    <div class="task-detail-block"><strong>步骤：</strong>${stepsHtml}</div>
+    <div class="task-detail-block"><strong>产物：</strong>${artifactsHtml}</div>
+  `;
+}
+
+async function fetchTasks() {
+  if (!state.currentSessionId) return;
+  const data = await api(`/api/tasks?session_id=${encodeURIComponent(state.currentSessionId)}&limit=30`);
+  state.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  if (!state.currentTaskId && state.tasks.length) {
+    state.currentTaskId = String(state.tasks[0].id || "");
+  }
+  renderTaskPanel();
+}
+
+async function fetchTaskDetail(taskId) {
+  const id = String(taskId || "");
+  if (!id) {
+    state.currentTaskDetail = null;
+    renderTaskDetail();
+    return;
+  }
+  const detail = await api(`/api/tasks/${encodeURIComponent(id)}`);
+  state.currentTaskId = id;
+  state.currentTaskDetail = detail || null;
+  renderTaskPanel();
+  renderTaskDetail();
+}
+
+async function sendBackgroundQuestion() {
+  const input = qs("questionInput");
+  const message = (input && input.value ? input.value.trim() : "");
+  if (!message) return;
+  input.value = "";
+  renderBubble(message, "user");
+  setStatus("后台任务创建中...");
+  try {
+    const payload = {
+      message,
+      session_id: state.currentSessionId,
+      run_mode: "background",
+    };
+    if (shouldAttachLatestFile(message)) {
+      payload.file_id = state.latestUpload.file_id;
+    }
+    const data = await api("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderBubble(`后台任务已创建：${data.task_id}`, "system");
+    await fetchTasks();
+    if (data.task_id) {
+      await fetchTaskDetail(data.task_id);
+    }
+  } catch (err) {
+    await uiAlert(`后台任务创建失败：${err.message}`, "操作失败");
+  } finally {
+    setStatus("就绪");
+  }
+}
+
+async function runTaskAction(action, taskId) {
+  if (!taskId) return;
+  const actionMap = {
+    cancel: { url: `/api/tasks/${encodeURIComponent(taskId)}/cancel`, body: null, confirm: "确定取消该任务吗？", title: "取消任务" },
+    retry: { url: `/api/tasks/${encodeURIComponent(taskId)}/retry`, body: {}, confirm: "确定重试该任务吗？", title: "重试任务" },
+    resume: { url: `/api/tasks/${encodeURIComponent(taskId)}/resume`, body: null, confirm: "确定继续该任务吗？", title: "继续任务" },
+  };
+  const cfg = actionMap[action];
+  if (!cfg) return;
+  if (!(await uiConfirm(cfg.confirm, cfg.title))) return;
+  setStatus("任务操作执行中...");
+  try {
+    const options = { method: "POST" };
+    if (cfg.body !== null) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(cfg.body);
+    }
+    const data = await api(cfg.url, options);
+    if (data && data.task_id) {
+      state.currentTaskId = String(data.task_id);
+    }
+    await fetchTasks();
+    if (state.currentTaskId) {
+      await fetchTaskDetail(state.currentTaskId);
+    }
+  } catch (err) {
+    await uiAlert(`任务操作失败：${err.message}`, "操作失败");
+  } finally {
+    setStatus("就绪");
+  }
+}
+
+function startTaskPolling() {
+  if (taskPollTimer) {
+    clearInterval(taskPollTimer);
+  }
+  taskPollTimer = setInterval(async () => {
+    try {
+      const hasRunning = (state.tasks || []).some((t) => !!t.is_running || String(t.status || "").toLowerCase() === "running");
+      if (!hasRunning && !state.currentTaskId) return;
+      await fetchTasks();
+      if (state.currentTaskId) {
+        await fetchTaskDetail(state.currentTaskId);
+      }
+    } catch (_err) {
+      // 轮询失败静默处理，避免打断用户聊天
+    }
+  }, 3000);
+}
+
+function shouldAttachLatestFile(question) {
+  const q = String(question || "").toLowerCase();
+  if (!state.latestUpload || !state.latestUpload.file_id) return false;
+  if (/\bfile[_-]?id\s*[:：]?\s*[a-z0-9_-]+\b/i.test(q)) return false;
+  const keywords = ["分析这个文件", "分析文件", "分析数据", "分析表格", "csv", "excel", "xlsx", "xls", "json", "txt", "数据文件"];
+  return keywords.some((k) => q.includes(String(k).toLowerCase()));
+}
+
 function setHeaderTitle() {
   const current = state.sessions.find((s) => s.id === state.currentSessionId);
   qs("headerTitle").textContent = current ? `当前会话：${current.title}` : "当前会话";
@@ -592,6 +860,14 @@ async function switchSession(sessionId) {
   }
   for (const m of history) {
     renderBubble(m.text, m.role === "user" ? "user" : "assistant");
+  }
+  state.currentTaskId = "";
+  state.currentTaskDetail = null;
+  await fetchTasks();
+  if (state.currentTaskId) {
+    await fetchTaskDetail(state.currentTaskId);
+  } else {
+    renderTaskDetail();
   }
 }
 
@@ -779,18 +1055,25 @@ async function sendQuestion() {
   updateSendButtonState();
   setStatus("正在思考...");
   try {
+    const payload = { question, session_id: state.currentSessionId };
+    if (shouldAttachLatestFile(question)) {
+      payload.file_id = state.latestUpload.file_id;
+    }
     const data = await api("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, session_id: state.currentSessionId }),
+      body: JSON.stringify(payload),
       signal: activeChatController.signal,
     });
     pending.textContent = data.answer || "";
+    renderExecutionPanel(data, pending);
+    renderArtifacts(data);
     if ((data.sources || []).length) {
       renderBubble(`参考来源: ${data.sources.join(", ")}`, "system");
     }
-    if (data.trace) {
-      renderBubble(`执行轨迹: ${data.trace}`, "system");
+    if (data.task_id) {
+      await fetchTasks();
+      await fetchTaskDetail(data.task_id);
     }
     if (data.session_id) state.currentSessionId = data.session_id;
     await reloadSessions();
@@ -805,6 +1088,27 @@ async function sendQuestion() {
     activePendingBubble = null;
     isAsking = false;
     updateSendButtonState();
+    setStatus("就绪");
+  }
+}
+
+async function uploadDataFile(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  setStatus("上传数据中...");
+  try {
+    const data = await api("/api/files/upload", { method: "POST", body: form });
+    const info = data.file || {};
+    state.latestUpload = info;
+    const hint = qs("uploadHint");
+    if (hint && info.file_id) {
+      hint.textContent = `已上传：${info.original_name}，file_id: ${info.file_id}。你可以输入“分析这个文件”。`;
+    }
+    renderBubble(`已上传数据文件：${info.original_name}（file_id: ${info.file_id}）`, "system");
+  } catch (err) {
+    await uiAlert(`上传失败：${err.message}`, "上传失败");
+  } finally {
     setStatus("就绪");
   }
 }
@@ -888,6 +1192,20 @@ function bindEvents() {
       else qs("chatArea").innerHTML = "";
     }
   });
+  qs("taskList").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-task-id]");
+    if (!btn) return;
+    const taskId = btn.getAttribute("data-task-id");
+    if (!taskId) return;
+    await fetchTaskDetail(taskId);
+  });
+  qs("taskDetail").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-task-action]");
+    if (!btn) return;
+    const action = btn.getAttribute("data-task-action");
+    const taskId = btn.getAttribute("data-task-id");
+    await runTaskAction(action, taskId);
+  });
 
   qs("sendBtn").addEventListener("click", () => {
     if (isAsking) {
@@ -896,12 +1214,22 @@ function bindEvents() {
     }
     sendQuestion();
   });
+  qs("sendBgBtn").addEventListener("click", async () => {
+    if (isAsking) return;
+    await sendBackgroundQuestion();
+  });
   qs("questionInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (isAsking) return;
       sendQuestion();
     }
+  });
+  qs("uploadDataBtn").addEventListener("click", () => qs("dataFileInput").click());
+  qs("dataFileInput").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) await uploadDataFile(file);
+    e.target.value = "";
   });
   qs("clearSessionBtn").addEventListener("click", async () => {
     if (!state.currentSessionId) return;
@@ -1055,7 +1383,14 @@ async function init() {
   } else {
     history.forEach((m) => renderBubble(m.text, m.role === "user" ? "user" : "assistant"));
   }
+  await fetchTasks();
+  if (state.currentTaskId) {
+    await fetchTaskDetail(state.currentTaskId);
+  } else {
+    renderTaskDetail();
+  }
   await loadObservabilityStatus();
+  startTaskPolling();
   setStatus("就绪");
 }
 

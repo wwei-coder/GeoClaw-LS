@@ -45,6 +45,8 @@ models/
 # Temporary files
 tmp/
 temp/
+workspace/uploads/
+workspace/artifacts/
 *.tmp
 *.bak
 *.swp
