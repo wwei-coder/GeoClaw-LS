@@ -51,6 +51,7 @@ const PATH_SEGMENT_LABELS = {
   ollama: "本地模型服务",
   system: "系统参数",
   logging: "日志设置",
+  observability: "观测链路",
   timeout: "超时时间",
   temperature: "创造性",
   top_p: "采样范围",
