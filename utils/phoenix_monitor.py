@@ -1,7 +1,5 @@
 from utils.warning_filters import suppress_known_third_party_warnings
-
 suppress_known_third_party_warnings()
-
 import threading
 import time
 import os
@@ -162,7 +160,7 @@ def shutdown_phoenix_monitor():
                 _TOGGLE_SPAN_PROCESSOR.force_flush()
             except Exception:
                 pass
-        # 这里不调用 tracer_provider.shutdown()，避免运行中触发 exporter 关闭后的批量提交噪音日志。
+        # 不调用 tracer_provider.shutdown()，避免运行中触发 exporter 关闭后的批量提交噪音日志。
         _PHOENIX_LAUNCHED = False
         _PHOENIX_STARTING = False
 

@@ -18,7 +18,6 @@ prompts:
     用户问题：{question}
     关键词：
 
-  # 与代码中的 QUERY_EXPANSION_PROMPT 对齐，保持兼容
   query_expansion: |
     你是地质滑坡检索关键词优化专家。请根据用户问题生成检索关键词。
     要求：

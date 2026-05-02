@@ -8,12 +8,16 @@ const state = {
   selectedPath: "",
   settingsDirty: false,
   kbDocs: [],
+  kbSelectedDocName: "",
   observabilityEnabled: false,
   observabilityBusy: false,
   latestUpload: null,
   tasks: [],
   currentTaskId: "",
   currentTaskDetail: null,
+  taskDetailLoading: false,
+  taskPanelHtml: "",
+  taskDetailHtml: "",
 };
 let pageScrollLockCount = 0;
 let isAsking = false;
@@ -270,6 +274,17 @@ async function uiAlert(message, title = "提示") {
   });
 }
 
+function closeUiAfterReset() {
+  // 浏览器可能阻止直接关闭当前页，因此提供兜底降级为跳转空白页。
+  window.open("", "_self");
+  window.close();
+  setTimeout(() => {
+    if (!window.closed) {
+      window.location.replace("about:blank");
+    }
+  }, 120);
+}
+
 async function api(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) {
@@ -449,23 +464,59 @@ function formatDocStatus(status) {
   return key;
 }
 
+function getSelectedKbDoc() {
+  const name = String(state.kbSelectedDocName || "");
+  if (!name) return null;
+  return state.kbDocs.find((d) => String(d.name || "") === name) || null;
+}
+
+function renderKbGraphPanel() {
+  const titleEl = qs("kbGraphTitle");
+  const canvasEl = qs("kbGraphCanvas");
+  const noteEl = qs("kbGraphNote");
+  const actionBtn = qs("kbGraphActionBtn");
+  if (!titleEl || !canvasEl || !noteEl || !actionBtn) return;
+
+  const selected = getSelectedKbDoc();
+  if (!selected) {
+    titleEl.textContent = "知识图谱";
+    canvasEl.textContent = "请先在左侧选择一篇文档";
+    noteEl.textContent = "当前为按文档切换图谱视图（占位模式），后续可接入实体关系图。";
+    actionBtn.textContent = "图谱构建中";
+    return;
+  }
+
+  const docName = String(selected.name || "未命名文档");
+  const chunkCount = Number(selected.indexed_chunks ?? 0);
+  const status = formatDocStatus(selected.fingerprint_status);
+  titleEl.textContent = `${docName} · 知识图谱`;
+  canvasEl.textContent = `《${docName}》图谱预览区（待接入）`;
+  noteEl.textContent = `当前文档：${docName}；分块：${chunkCount}；状态：${status}。`;
+  actionBtn.textContent = "该文档图谱";
+}
+
 function renderKbDocsContent() {
   const el = qs("kbDocsContent");
   if (!el) return;
   if (!state.kbDocs.length) {
+    state.kbSelectedDocName = "";
+    renderKbGraphPanel();
     el.innerHTML = `<div class="kb-doc-empty">暂无文档索引信息</div>`;
     return;
   }
+  const selectedName = String(state.kbSelectedDocName || "");
   el.innerHTML = `
     <div class="kb-doc-list">
       ${state.kbDocs
         .map((d) => {
           const name = escapeHtml(d.name || "未命名文档");
+          const rawName = String(d.name || "");
           const chunks = Number(d.indexed_chunks ?? 0);
           const status = formatDocStatus(d.fingerprint_status);
           const sizeText = formatFileSize(d.size);
+          const active = rawName === selectedName ? " active" : "";
           return `
-            <div class="kb-doc-item">
+            <div class="kb-doc-item${active}" data-doc-name="${escapeAttr(rawName)}">
               <div class="kb-doc-name" title="${name}">${name}</div>
               <div class="kb-doc-meta">
                 <span>分块：${chunks}</span>
@@ -478,6 +529,7 @@ function renderKbDocsContent() {
         .join("")}
     </div>
   `;
+  renderKbGraphPanel();
 }
 
 function splitConfigPath(path = "") {
@@ -618,69 +670,78 @@ function renderTaskPanel() {
   const listEl = qs("taskList");
   if (!listEl) return;
   const tasks = Array.isArray(state.tasks) ? state.tasks : [];
-  if (!tasks.length) {
-    listEl.innerHTML = `<div class="task-empty">暂无任务</div>`;
+  const nextHtml = !tasks.length
+    ? `<div class="task-empty">暂无任务</div>`
+    : tasks
+        .map((t) => {
+          const id = String(t.id || "");
+          const active = id && id === state.currentTaskId ? " active" : "";
+          const q = escapeHtml(String(t.user_query || "未命名任务"));
+          const status = escapeHtml(formatTaskStatus(t.status));
+          return `<button class="task-item${active}" data-task-id="${escapeAttr(id)}" title="${q}"><span class="task-item-q">${q}</span><span class="task-item-status">${status}</span></button>`;
+        })
+        .join("");
+  if (state.taskPanelHtml === nextHtml) {
     return;
   }
-  listEl.innerHTML = tasks
-    .map((t) => {
-      const id = String(t.id || "");
-      const active = id && id === state.currentTaskId ? " active" : "";
-      const q = escapeHtml(String(t.user_query || "未命名任务"));
-      const status = escapeHtml(formatTaskStatus(t.status));
-      return `<button class="task-item${active}" data-task-id="${escapeAttr(id)}" title="${q}"><span class="task-item-q">${q}</span><span class="task-item-status">${status}</span></button>`;
-    })
-    .join("");
+  const workbenchEl = qs("taskWorkbench");
+  const workbenchScrollTop = workbenchEl ? workbenchEl.scrollTop : 0;
+  listEl.innerHTML = nextHtml;
+  state.taskPanelHtml = nextHtml;
+  if (workbenchEl) workbenchEl.scrollTop = workbenchScrollTop;
 }
 
 function renderTaskDetail() {
   const detailEl = qs("taskDetail");
   if (!detailEl) return;
-  const detail = state.currentTaskDetail;
-  if (!detail || !detail.task) {
-    detailEl.innerHTML = "暂无任务";
-    return;
-  }
-  const task = detail.task || {};
-  const steps = Array.isArray(detail.steps) ? detail.steps : [];
-  const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : [];
-  const progress = detail.progress || {};
-  const isRunning = !!detail.is_running;
-  const cancelRequested = !!detail.cancel_requested;
-  const statusRaw = String(task.status || "").toLowerCase();
-  const answerPreview = escapeHtml(String(task.answer_preview || ""));
-  const stepsHtml = steps.length
-    ? `<ul>${steps
-        .map((s, i) => {
-          const tool = escapeHtml(String(s.tool_name || s.tool || "UNKNOWN"));
-          const status = escapeHtml(formatStepStatus(s.status));
-          const instruction = escapeHtml(String(s.instruction || s.task || ""));
-          return `<li>${i + 1}. ${tool} ${status}${instruction ? ` - ${instruction}` : ""}</li>`;
-        })
-        .join("")}</ul>`
-    : `<div class="task-empty">暂无步骤</div>`;
-  const artifactsHtml = artifacts.length
-    ? `<ul>${artifacts
-        .map((a) => {
-          const name = escapeHtml(String(a.name || a.id || "产物"));
-          const type = escapeHtml(String(a.type || a.kind || "unknown"));
-          const url = a.download_url || a.url || (a.id ? `/api/artifacts/${encodeURIComponent(a.id)}` : "");
-          const link = url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">下载</a>` : "";
-          return `<li>${name}（${type}）${link ? ` - ${link}` : ""}</li>`;
-        })
-        .join("")}</ul>`
-    : `<div class="task-empty">暂无产物</div>`;
-  const actions = [];
-  if (isRunning) {
-    actions.push(`<button class="btn btn-outline small" data-task-action="cancel" data-task-id="${escapeAttr(String(task.id || ""))}" ${cancelRequested ? "disabled" : ""}>${cancelRequested ? "取消中" : "取消任务"}</button>`);
-  }
-  if (statusRaw === "failed" || statusRaw === "partial") {
-    actions.push(`<button class="btn btn-outline small" data-task-action="retry" data-task-id="${escapeAttr(String(task.id || ""))}">重试任务</button>`);
-  }
-  if (statusRaw === "canceled" || statusRaw === "partial" || statusRaw === "failed") {
-    actions.push(`<button class="btn btn-outline small" data-task-action="resume" data-task-id="${escapeAttr(String(task.id || ""))}">继续任务</button>`);
-  }
-  detailEl.innerHTML = `
+  let nextHtml = "";
+  if (state.taskDetailLoading) {
+    nextHtml = `<div class="task-empty">任务详情加载中...</div>`;
+  } else {
+    const detail = state.currentTaskDetail;
+    if (!detail || !detail.task) {
+      nextHtml = "暂无任务";
+    } else {
+      const task = detail.task || {};
+      const steps = Array.isArray(detail.steps) ? detail.steps : [];
+      const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : [];
+      const progress = detail.progress || {};
+      const isRunning = !!detail.is_running;
+      const cancelRequested = !!detail.cancel_requested;
+      const statusRaw = String(task.status || "").toLowerCase();
+      const answerPreview = escapeHtml(String(task.answer_preview || ""));
+      const stepsHtml = steps.length
+        ? `<ul>${steps
+            .map((s, i) => {
+              const tool = escapeHtml(String(s.tool_name || s.tool || "UNKNOWN"));
+              const status = escapeHtml(formatStepStatus(s.status));
+              const instruction = escapeHtml(String(s.instruction || s.task || ""));
+              return `<li>${i + 1}. ${tool} ${status}${instruction ? ` - ${instruction}` : ""}</li>`;
+            })
+            .join("")}</ul>`
+        : `<div class="task-empty">暂无步骤</div>`;
+      const artifactsHtml = artifacts.length
+        ? `<ul>${artifacts
+            .map((a) => {
+              const name = escapeHtml(String(a.name || a.id || "产物"));
+              const type = escapeHtml(String(a.type || a.kind || "unknown"));
+              const url = a.download_url || a.url || (a.id ? `/api/artifacts/${encodeURIComponent(a.id)}` : "");
+              const link = url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">下载</a>` : "";
+              return `<li>${name}（${type}）${link ? ` - ${link}` : ""}</li>`;
+            })
+            .join("")}</ul>`
+        : `<div class="task-empty">暂无产物</div>`;
+      const actions = [];
+      if (isRunning) {
+        actions.push(`<button class="btn btn-outline small" data-task-action="cancel" data-task-id="${escapeAttr(String(task.id || ""))}" ${cancelRequested ? "disabled" : ""}>${cancelRequested ? "取消中" : "取消任务"}</button>`);
+      }
+      if (statusRaw === "failed" || statusRaw === "partial") {
+        actions.push(`<button class="btn btn-outline small" data-task-action="retry" data-task-id="${escapeAttr(String(task.id || ""))}">重试任务</button>`);
+      }
+      if (statusRaw === "canceled" || statusRaw === "partial" || statusRaw === "failed") {
+        actions.push(`<button class="btn btn-outline small" data-task-action="resume" data-task-id="${escapeAttr(String(task.id || ""))}">继续任务</button>`);
+      }
+      nextHtml = `
     <div class="task-detail-block"><strong>问题：</strong>${escapeHtml(String(task.user_query || ""))}</div>
     <div class="task-detail-block"><strong>状态：</strong>${escapeHtml(formatTaskStatus(task.status))}</div>
     <div class="task-detail-block"><strong>进度：</strong>${escapeHtml(formatProgress(progress))}</div>
@@ -689,6 +750,16 @@ function renderTaskDetail() {
     <div class="task-detail-block"><strong>步骤：</strong>${stepsHtml}</div>
     <div class="task-detail-block"><strong>产物：</strong>${artifactsHtml}</div>
   `;
+    }
+  }
+  if (state.taskDetailHtml === nextHtml) {
+    return;
+  }
+  const workbenchEl = qs("taskWorkbench");
+  const workbenchScrollTop = workbenchEl ? workbenchEl.scrollTop : 0;
+  detailEl.innerHTML = nextHtml;
+  state.taskDetailHtml = nextHtml;
+  if (workbenchEl) workbenchEl.scrollTop = workbenchScrollTop;
 }
 
 async function fetchTasks() {
@@ -701,18 +772,33 @@ async function fetchTasks() {
   renderTaskPanel();
 }
 
-async function fetchTaskDetail(taskId) {
+async function fetchTaskDetail(taskId, options = {}) {
+  const { silent = false } = options;
   const id = String(taskId || "");
   if (!id) {
+    state.taskDetailLoading = false;
     state.currentTaskDetail = null;
     renderTaskDetail();
     return;
   }
-  const detail = await api(`/api/tasks/${encodeURIComponent(id)}`);
   state.currentTaskId = id;
-  state.currentTaskDetail = detail || null;
-  renderTaskPanel();
-  renderTaskDetail();
+  if (!silent) {
+    state.currentTaskDetail = null;
+    state.taskDetailLoading = true;
+    renderTaskPanel();
+    renderTaskDetail();
+  }
+  try {
+    const detail = await api(`/api/tasks/${encodeURIComponent(id)}`);
+    if (state.currentTaskId !== id) return;
+    state.currentTaskDetail = detail || null;
+  } finally {
+    if (state.currentTaskId === id) {
+      if (state.taskDetailLoading) state.taskDetailLoading = false;
+      renderTaskPanel();
+      renderTaskDetail();
+    }
+  }
 }
 
 async function sendBackgroundQuestion() {
@@ -790,7 +876,7 @@ function startTaskPolling() {
       if (!hasRunning && !state.currentTaskId) return;
       await fetchTasks();
       if (state.currentTaskId) {
-        await fetchTaskDetail(state.currentTaskId);
+        await fetchTaskDetail(state.currentTaskId, { silent: true });
       }
     } catch (_err) {
       // 轮询失败静默处理，避免打断用户聊天
@@ -851,18 +937,21 @@ async function reloadSessions() {
 async function switchSession(sessionId) {
   const data = await api(`/api/sessions/${sessionId}/switch`, { method: "POST" });
   state.currentSessionId = data.session_id;
+  state.currentTaskId = "";
+  state.currentTaskDetail = null;
+  state.tasks = [];
   renderSessions();
   qs("chatArea").innerHTML = "";
   const history = data.history_messages || [];
   if (!history.length) {
     renderBubble("此对话暂无消息。", "assistant");
-    return;
+  } else {
+    for (const m of history) {
+      renderBubble(m.text, m.role === "user" ? "user" : "assistant");
+    }
   }
-  for (const m of history) {
-    renderBubble(m.text, m.role === "user" ? "user" : "assistant");
-  }
-  state.currentTaskId = "";
-  state.currentTaskDetail = null;
+  renderTaskPanel();
+  renderTaskDetail();
   await fetchTasks();
   if (state.currentTaskId) {
     await fetchTaskDetail(state.currentTaskId);
@@ -1113,9 +1202,37 @@ async function uploadDataFile(file) {
   }
 }
 
+async function uploadKbDocument(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  setStatus("资料上传中...");
+  try {
+    const data = await api("/api/kb/upload", { method: "POST", body: form });
+    const info = data.file || {};
+    const originalName = info.original_name || file.name || "未命名文件";
+    renderBubble(`已添加资料：${originalName}，正在增量更新索引...`, "system");
+    await doKbSync(false);
+    await refreshKbConsole();
+    renderBubble(`知识库已更新：${originalName}`, "system");
+  } catch (err) {
+    await uiAlert(`添加资料失败：${err.message}`, "上传失败");
+  } finally {
+    setStatus("就绪");
+  }
+}
+
 async function refreshKbConsole() {
   const docs = await api("/api/kb/documents");
   state.kbDocs = (docs && docs.documents) || [];
+  if (!state.kbDocs.length) {
+    state.kbSelectedDocName = "";
+  } else {
+    const keep = state.kbDocs.some((d) => String(d.name || "") === String(state.kbSelectedDocName || ""));
+    if (!keep) {
+      state.kbSelectedDocName = String(state.kbDocs[0].name || "");
+    }
+  }
   renderKbDocsContent();
 }
 
@@ -1255,6 +1372,14 @@ function bindEvents() {
   qs("closeKbBtn").addEventListener("click", () => {
     qs("kbPanel").classList.add("hidden");
   });
+  qs("kbDocsContent").addEventListener("click", (e) => {
+    const item = e.target.closest(".kb-doc-item");
+    if (!item) return;
+    const name = String(item.dataset.docName || "");
+    if (!name) return;
+    state.kbSelectedDocName = name;
+    renderKbDocsContent();
+  });
   qs("kbRefreshBtn").addEventListener("click", async () => {
     await refreshKbConsole();
   });
@@ -1270,6 +1395,12 @@ function bindEvents() {
       setStatus("就绪");
     }
   });
+  qs("kbAddDocBtn").addEventListener("click", () => qs("kbDocFileInput").click());
+  qs("kbDocFileInput").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) await uploadKbDocument(file);
+    e.target.value = "";
+  });
   qs("kbResetBtn").addEventListener("click", async () => {
     if (!(await uiConfirm("确定执行系统重置吗？会清空会话与索引缓存。", "系统重置"))) return;
     try {
@@ -1279,6 +1410,13 @@ function bindEvents() {
       qs("chatArea").innerHTML = "";
       renderBubble("系统已重置，请继续提问。", "system");
       await refreshKbConsole();
+      await uiAlert("系统已重置，程序与页面即将关闭。", "重置完成");
+      try {
+        await api("/api/system/shutdown", { method: "POST" });
+      } catch (_err) {
+        // 服务可能在返回前已关闭，前端无需再报错打断用户。
+      }
+      closeUiAfterReset();
     } catch (err) {
       await uiAlert(`系统重置失败: ${err.message}`, "执行失败");
     } finally {

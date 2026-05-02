@@ -14,7 +14,7 @@
       <div class="sidebar-top">
         <div class="logo-wrap">
           <div class="logo">GeoClaw-LS</div>
-          <div class="logo-sub">地质滑坡智能助手 V1.0</div>
+          <div class="logo-sub">地质滑坡智能助手 V1.1.0</div>
         </div>
         <button id="newSessionBtn" class="btn btn-green">+ 新建对话</button>
         <input id="sessionSearch" class="input" placeholder="搜索历史会话" />
@@ -40,18 +40,19 @@
         <button id="openObservabilityBtn" class="btn btn-outline small">观测链路</button>
         <button id="openSettingsBtn" class="btn btn-outline small">设置</button>
       </div>
-      <header class="header">
-        <div class="header-meta">
-          <div class="header-eyebrow">工作区</div>
-          <div id="headerTitle">当前会话</div>
-        </div>
-        <div class="header-actions">
-          <button id="clearSessionBtn" class="btn btn-outline danger small">清除当前会话</button>
-        </div>
-      </header>
-
       <div class="workspace-body">
-        <section id="chatArea" class="chat-area"></section>
+        <div class="workspace-main">
+          <header class="header">
+            <div class="header-meta">
+              <div class="header-eyebrow">工作区</div>
+              <div id="headerTitle">当前会话</div>
+            </div>
+            <div class="header-actions">
+              <button id="clearSessionBtn" class="btn btn-outline danger small">清除当前会话</button>
+            </div>
+          </header>
+          <section id="chatArea" class="chat-area"></section>
+        </div>
         <aside id="taskWorkbench" class="task-workbench">
           <div class="task-workbench-title">任务工作台</div>
           <div class="task-workbench-sub">最近任务</div>
@@ -121,15 +122,16 @@
           <div id="kbDocsContent" class="mono-block"></div>
         </section>
         <section class="form-panel kb-graph-panel">
-          <h3>知识图谱</h3>
-          <div class="kb-graph-toolbar">
-            <button class="btn btn-outline small" type="button" disabled>图谱构建中</button>
+          <div class="kb-graph-head">
+            <h3 id="kbGraphTitle">知识图谱</h3>
+            <button id="kbGraphActionBtn" class="btn btn-outline small kb-graph-action" type="button" disabled>图谱构建中</button>
           </div>
-          <div class="kb-graph-canvas">知识图谱预览区（待接入）</div>
-          <div class="kb-graph-note">右侧区域已预留，可在下一步接入实体关系图与筛选控件。</div>
+          <div id="kbGraphCanvas" class="kb-graph-canvas">请先在左侧选择一篇文档</div>
+          <div id="kbGraphNote" class="kb-graph-note">当前为按文档切换图谱视图（占位模式），后续可接入实体关系图。</div>
         </section>
       </div>
     </div>
+    <input id="kbDocFileInput" type="file" accept=".pdf,.docx,.txt" class="hidden" />
   </div>
 
   <div id="dialogMask" class="dialog-mask hidden" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">

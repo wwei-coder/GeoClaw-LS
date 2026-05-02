@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import os
 import re
@@ -9,10 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 def _now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 
 class FileWorkspace:
     ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".txt", ".json"}

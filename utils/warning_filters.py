@@ -1,6 +1,5 @@
 import warnings
 
-
 def suppress_known_third_party_warnings() -> None:
     """Hide noisy import-time warnings from pinned third-party dependencies."""
     warnings.filterwarnings(

@@ -38,7 +38,7 @@ def list_tasks(session_id: Optional[int] = None, limit: int = 50):
             rows.append(payload)
         return {"tasks": rows}
 
-    return bridge.with_agent(_inner)
+    return bridge.with_agent_readonly(_inner)
 
 
 @router.get("/api/tasks/{task_id}")
@@ -66,7 +66,7 @@ def get_task_detail(task_id: str):
             "progress": compute_progress(task, steps),
         }
 
-    return bridge.with_agent(_inner)
+    return bridge.with_agent_readonly(_inner)
 
 
 @router.post("/api/tasks")
@@ -179,4 +179,4 @@ def get_task_artifacts(task_id: str, limit: int = 50):
         artifacts = store.list_artifacts(task_id=task_id, limit=safe_limit)
         return {"artifacts": [serialize_artifact(a) for a in artifacts]}
 
-    return bridge.with_agent(_inner)
+    return bridge.with_agent_readonly(_inner)

@@ -1,5 +1,4 @@
 from typing import Any, Dict
-
 from tools.base import ToolResult
 from tools.registry import execute_tool, get_tool_registry
 from utils.logger import logger

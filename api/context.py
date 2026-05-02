@@ -129,6 +129,11 @@ class RAGBridge:
         with self._lock:
             return fn(self.get_agent())
 
+    def with_agent_readonly(self, fn: Callable[[Any], Any]) -> Any:
+        """执行只读调用：仅保证 agent 已初始化，不持有全局执行锁。"""
+        agent = self.get_agent()
+        return fn(agent)
+
     def reset_agent(self) -> None:
         with self._lock:
             agent = self._agent
