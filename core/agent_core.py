@@ -7,17 +7,18 @@ import contextvars
 from typing import Dict, List, Any, Optional
 from loguru import logger
 from utils.ollama_client import ask_ollama, ask_ollama_async
-from rag.vector_store import VectorStore
-from memory.database_manager import DatabaseManager
-import core.prompts as prompts
+from storage.sqlite.database_manager import DatabaseManager
+from storage.vector.vector_store import VectorStore
 from core.tools import TOOL_REGISTRY
 from core.graph_agent import GraphAgent
+from agent.brain import LLMBrain
+from agent.brain.prompt_catalog import get_prompt_catalog
+from agent.runtime import AgentRequestContext, GraphRuntime
 from agent.task_store import TaskStore
 from agent.task_runner import TaskRunner
 from core.file_workspace import FileWorkspace
-from memory.doc_fingerprint import generate_fingerprint, load_fingerprint, save_fingerprint, diff_fingerprint
-from rag.loader import load_documents_from_dir
-from rag.chunker import build_knowledge_chunks
+from capabilities.rag import RagService
+from capabilities.rag.indexing.fingerprint import diff_fingerprint, generate_fingerprint, load_fingerprint, save_fingerprint
 from core.config import (
     DB_PATH,
     DATA_DIR,
@@ -46,10 +47,6 @@ from core.chains import (
     RetrieverChain,
     SynthesisChain
 )
-from core.question_classifier import (
-    is_small_talk,
-    is_memory_query,
-)
 class AgentCore:
     def __init__(self):
         self.user_id = "default_user"
@@ -72,6 +69,7 @@ class AgentCore:
         self._execution_lock = threading.RLock()
         self._last_kb_sync_summary: Dict[str, Any] = {"mode": "init"}
         self._request_session_id_var = contextvars.ContextVar("request_session_id", default=None)
+        self._request_context_var = contextvars.ContextVar("request_context", default=None)
         self.file_workspace = FileWorkspace(root_dir="workspace")
         self.active_file_id: Optional[str] = None
         self.active_files: List[Dict[str, Any]] = []
@@ -79,6 +77,16 @@ class AgentCore:
         self.vector_store = VectorStore(
             model_name=DEFAULT_EMBEDDING_MODEL,
             index_path="vector_db"
+        )
+        self.rag_service = RagService(
+            vector_store=self.vector_store,
+            data_dir=DATA_DIR,
+            fingerprint_path=FINGERPRINT_PATH,
+            collection_name=VECTOR_COLLECTION_NAME,
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
+            embedding_backend=EMBEDDING_BACKEND,
+            rerank_strategy=RERANK_STRATEGY,
+            rerank_model=RERANK_MODEL_NAME,
         )
         self._sync_knowledge_base()
 
@@ -103,68 +111,24 @@ class AgentCore:
 
         self.small_talk = SmallTalkChain(agent_core=self)
         self.memory_query = MemoryQueryChain(agent_core=self)
+        self.brain = LLMBrain(
+            self,
+            planner_chain=self.planner,
+            decision_chain=self.decision,
+            synthesis_chain=self.synthesis,
+            small_talk_chain=self.small_talk,
+            memory_query_chain=self.memory_query,
+        )
 
         # Initialize Graph Agent
         self.graph_agent = GraphAgent(self)
+        self.runtime = GraphRuntime(self.graph_agent)
 
     def _full_rebuild_knowledge_base(self, current_fp: Dict[str, Any], reason: str = "force_rebuild") -> Dict[str, Any]:
-        logger.info("📚 执行全量重建向量库…")
-        documents = load_documents_from_dir(DATA_DIR)
-        chunks = build_knowledge_chunks(documents)
-        self.vector_store.build_full(chunks)
-        save_fingerprint(current_fp, FINGERPRINT_PATH)
-        logger.info(f"✅ 全量重建完成，文档数={len(documents)}，切块数={len(chunks)}")
-        return {
-            "mode": "full",
-            "reason": reason,
-            "documents": len(documents),
-            "chunks": len(chunks),
-            "changes": {
-                "added": len(current_fp.keys()),
-                "updated": 0,
-                "removed": 0
-            }
-        }
+        return self.rag_service.full_rebuild(current_fp, reason=reason)
 
     def _incremental_update_knowledge_base(self, current_fp: Dict[str, Any], saved_fp: Dict[str, Any]) -> Dict[str, Any]:
-        changes = diff_fingerprint(current_fp, saved_fp)
-        if not changes["changed"]:
-            logger.info("📚 文档无变化，跳过增量更新。")
-            return {
-                "mode": "no_change",
-                "changes": {"added": 0, "updated": 0, "removed": 0},
-                "documents": 0,
-                "chunks": 0
-            }
-
-        changed_for_reload = sorted(changes["added"] + changes["updated"])
-        docs_to_remove = sorted(changes["removed"] + changes["updated"])
-        logger.info(
-            f"📚 检测到文档变更：新增={len(changes['added'])}，修改={len(changes['updated'])}，删除={len(changes['removed'])}"
-        )
-        if docs_to_remove:
-            self.vector_store.deactivate_by_docs(docs_to_remove)
-        if changed_for_reload:
-            changed_docs = load_documents_from_dir(DATA_DIR, file_names=changed_for_reload)
-            changed_chunks = build_knowledge_chunks(changed_docs)
-            self.vector_store.add_chunks(changed_chunks)
-            logger.info(f"📚 增量写入完成：文档数={len(changed_docs)}，切块数={len(changed_chunks)}")
-            touched_documents = len(changed_docs)
-            touched_chunks = len(changed_chunks)
-        else:
-            touched_documents = 0
-            touched_chunks = 0
-        save_fingerprint(current_fp, FINGERPRINT_PATH)
-        return {
-            "mode": "incremental",
-            "changes": {
-                "added": len(changes["added"]),
-                "updated": len(changes["updated"]),
-                "removed": len(changes["removed"])
-            },
-            "documents": touched_documents,
-            "chunks": touched_chunks
-        }
+        return self.rag_service.incremental_update(current_fp, saved_fp)
 
     def _sync_knowledge_base(self):
         with self._kb_sync_lock:
@@ -216,39 +180,7 @@ class AgentCore:
         return dict(self._last_kb_sync_summary)
 
     def get_knowledge_base_status(self) -> Dict[str, Any]:
-        collection_count = 0
-        collection_metadata = {}
-        runtime_stats = {}
-        try:
-            collection = getattr(self.vector_store, "collection", None)
-            if collection is not None:
-                collection_count = int(collection.count())
-                collection_metadata = dict(getattr(collection, "metadata", None) or {})
-        except Exception as e:
-            logger.warning(f"[AgentCore] 获取知识库 collection 状态失败: {e}")
-        try:
-            runtime_stats = self.vector_store.get_runtime_stats()
-        except Exception as e:
-            logger.warning(f"[AgentCore] 获取向量库运行状态失败: {e}")
-        current_fp = generate_fingerprint(DATA_DIR)
-        saved_fp = load_fingerprint(FINGERPRINT_PATH) or {}
-        return {
-            "data_dir": DATA_DIR,
-            "collection_name": VECTOR_COLLECTION_NAME,
-            "collection_count": collection_count,
-            "collection_metadata": collection_metadata,
-            "embedding_model": DEFAULT_EMBEDDING_MODEL,
-            "embedding_backend": EMBEDDING_BACKEND,
-            "rerank_strategy": RERANK_STRATEGY,
-            "rerank_model": RERANK_MODEL_NAME,
-            "last_sync": dict(self._last_kb_sync_summary),
-            "runtime": runtime_stats,
-            "fingerprint": {
-                "current_count": len(current_fp),
-                "saved_count": len(saved_fp),
-                "changed": diff_fingerprint(current_fp, saved_fp).get("changed", [])
-            }
-        }
+        return self.rag_service.get_status(last_sync=dict(self._last_kb_sync_summary))
 
     def get_document_index_stats(self) -> List[Dict[str, Any]]:
         current_fp = generate_fingerprint(DATA_DIR)
@@ -388,7 +320,7 @@ class AgentCore:
              words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
              disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
              if disallowed:
-                 rewrite_prompt = prompts.REWRITE_PROMPT.format(text=final_answer)
+                 rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
                  try:
                      final_answer = (await ask_ollama_async(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_REWRITE)).strip()
                  except Exception as e:
@@ -401,7 +333,7 @@ class AgentCore:
         # 3. Fix InSAR if needed
         if "InSAR" in question:
             if ("干涉合成孔径雷达" not in final_answer) or any(p in final_answer for p in INSAR_BAD_PHRASES):
-                fix_prompt = prompts.FIX_INSAR_PROMPT.format(question=question, answer=final_answer)
+                fix_prompt = get_prompt_catalog().render("fix_insar", question=question, answer=final_answer)
                 try:
                     final_answer = (await ask_ollama_async(fix_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR)).strip()
                 except Exception as e:
@@ -414,7 +346,7 @@ class AgentCore:
                     disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
                     if not disallowed:
                         break
-                    rewrite_prompt = prompts.REWRITE_PROMPT.format(text=final_answer)
+                    rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
                     try:
                         final_answer = (await ask_ollama_async(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR)).strip()
                     except Exception as e:
@@ -445,7 +377,7 @@ class AgentCore:
              words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
              disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
              if disallowed:
-                 rewrite_prompt = prompts.REWRITE_PROMPT.format(text=final_answer)
+                 rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
                  try:
                      final_answer = ask_ollama(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_REWRITE).strip()
                  except Exception as e:
@@ -458,7 +390,7 @@ class AgentCore:
         # 3. Fix InSAR if needed
         if "InSAR" in question:
             if ("干涉合成孔径雷达" not in final_answer) or any(p in final_answer for p in INSAR_BAD_PHRASES):
-                fix_prompt = prompts.FIX_INSAR_PROMPT.format(question=question, answer=final_answer)
+                fix_prompt = get_prompt_catalog().render("fix_insar", question=question, answer=final_answer)
                 try:
                     final_answer = ask_ollama(fix_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR).strip()
                 except Exception as e:
@@ -471,7 +403,7 @@ class AgentCore:
                     disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
                     if not disallowed:
                         break
-                    rewrite_prompt = prompts.REWRITE_PROMPT.format(text=final_answer)
+                    rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
                     try:
                         final_answer = ask_ollama(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR).strip()
                     except Exception as e:
@@ -528,6 +460,9 @@ class AgentCore:
                 logger.warning(f"[Session] Auto-rename failed: {e}；兜底重命名也失败: {rename_error}")
 
     def get_active_session_id(self) -> Optional[int]:
+        req_ctx = self._request_context_var.get()
+        if req_ctx is not None and getattr(req_ctx, "session_id", None) is not None:
+            return req_ctx.session_id
         sid = self._request_session_id_var.get()
         if sid is not None:
             return sid
@@ -536,9 +471,17 @@ class AgentCore:
             return sid
         return self.session_id
 
+    def get_active_request_context(self) -> Optional[AgentRequestContext]:
+        req_ctx = self._request_context_var.get()
+        if isinstance(req_ctx, AgentRequestContext):
+            return req_ctx
+        return None
+
     async def chat_async(
         self,
         question: str,
+        request_context: Optional[AgentRequestContext] = None,
+        session_id: Optional[int] = None,
         cancel_event=None,
         stream_callback=None,
         file_id: Optional[str] = None,
@@ -553,12 +496,35 @@ class AgentCore:
         if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
             return {"answer": "已取消本轮生成", "confidence": 0.0, "sources": []}
 
-        request_session_id = self.session_id
+        if request_context is not None:
+            req_ctx = AgentRequestContext(
+                session_id=request_context.session_id,
+                file_id=(request_context.file_id or "").strip() or None,
+                files=list(request_context.files or []),
+                run_mode=str(request_context.run_mode or run_mode or "sync"),
+                task_id=(request_context.task_id or "").strip() or None,
+                cancel_event=request_context.cancel_event if request_context.cancel_event is not None else cancel_event,
+                metadata=dict(request_context.metadata or {}),
+            )
+        else:
+            req_ctx = AgentRequestContext(
+                session_id=session_id if session_id is not None else self.session_id,
+                file_id=(file_id or "").strip() or None,
+                files=list(files or []),
+                run_mode=str(run_mode or "sync"),
+                task_id=(task_id or "").strip() or None,
+                cancel_event=cancel_event,
+                metadata={},
+            )
+
+        request_session_id = req_ctx.session_id
         token = self._request_session_id_var.set(request_session_id)
+        ctx_token = self._request_context_var.set(req_ctx)
         self._active_chat_session_id = request_session_id
-        self._active_cancel_event = cancel_event
-        self.active_file_id = (file_id or "").strip() or None
-        self.active_files = list(files or [])
+        self._active_cancel_event = req_ctx.cancel_event
+        # Compatibility fallback for tools that still read these legacy fields.
+        self.active_file_id = req_ctx.file_id
+        self.active_files = list(req_ctx.files or [])
 
         try:
             with self._execution_lock:
@@ -569,13 +535,13 @@ class AgentCore:
                     except Exception as e:
                         logger.warning(f"[Session] 异步自动重命名任务创建失败: {e}")
 
-                if is_small_talk(question):
-                    return await self.small_talk.ainvoke({"question": question})
-                if is_memory_query(question):
-                    return await self.memory_query.ainvoke({"question": question})
+                if self.brain.is_small_talk(question):
+                    return await self.brain.answer_small_talk(question)
+                if self.brain.is_memory_query(question):
+                    return await self.brain.answer_memory_query(question)
 
                 if self.pending_tool_call:
-                    judge_prompt = prompts.CONFIRMATION_JUDGE_PROMPT.format(question=question)
+                    judge_prompt = get_prompt_catalog().render("confirmation_judge", question=question)
                     intent = (await ask_ollama_async(judge_prompt)).strip().upper()
 
                     if "YES" in intent:
@@ -597,12 +563,12 @@ class AgentCore:
                         self.pending_tool_call = None
 
                 self._current_stream_callback = stream_callback
-                result = await self.graph_agent.run_async(
+                result = await self.runtime.run_async(
                     question,
-                    file_id=self.active_file_id,
-                    files=self.active_files,
-                    task_id=task_id or "",
-                    run_mode=run_mode or "sync",
+                    file_id=req_ctx.file_id or "",
+                    files=req_ctx.files,
+                    task_id=req_ctx.task_id or "",
+                    run_mode=req_ctx.run_mode or "sync",
                     resumed_from=resumed_from,
                 )
                 return result
@@ -611,6 +577,7 @@ class AgentCore:
             return {"answer": f"系统运行出错: {str(e)}", "confidence": 0.0, "sources": []}
         finally:
             self._request_session_id_var.reset(token)
+            self._request_context_var.reset(ctx_token)
             self._current_stream_callback = None
             self._active_chat_session_id = None
             self._active_cancel_event = None

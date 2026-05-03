@@ -1,6 +1,5 @@
 from agent.state import AgentStep, AgentTask, Artifact
 
-
 def test_artifact_roundtrip():
     obj = Artifact(
         id="artifact_1",
@@ -20,7 +19,6 @@ def test_artifact_roundtrip():
     assert rebuilt.type == obj.type
     assert rebuilt.metadata["k"] == "v"
 
-
 def test_agent_step_roundtrip():
     step = AgentStep(
         id="step_1",
@@ -36,7 +34,6 @@ def test_agent_step_roundtrip():
     assert rebuilt.tool_name == "RAG"
     assert rebuilt.result["content"] == "ok"
     assert rebuilt.artifacts[0].id == "a1"
-
 
 def test_agent_task_roundtrip():
     task = AgentTask(

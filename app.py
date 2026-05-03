@@ -5,7 +5,6 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-# 兼容导入：保留历史从 app.py 访问这些符号的能力
 from api.context import (
     ChatRequest,
     CreateSessionRequest,
@@ -36,6 +35,13 @@ if str(APP_ROOT) not in sys.path:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    try:
+        from core.reset_handler import consume_reset_flag_once
+
+        consume_reset_flag_once()
+    except OSError as exc:
+        logger.warning("系统重置标记消费失败，启动继续: %s", exc)
+
     try:
         desired_enabled = read_observability_enabled_from_config()
         from utils.phoenix_monitor import launch_phoenix_monitor, shutdown_phoenix_monitor
@@ -85,3 +91,5 @@ if __name__ == "__main__":
     server_port = _pick_available_port(server_host, DEFAULT_WEB_PORT, PORT_SCAN_LIMIT)
     print(f"[GeoClaw-LS] WebUI 启动地址: http://{server_host}:{server_port}/")
     uvicorn.run("app:app", host=server_host, port=server_port, reload=False)
+
+#  自检代码(终端执行)   Invoke-RestMethod http://127.0.0.1:18765/api/health

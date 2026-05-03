@@ -114,6 +114,9 @@ class RAGBridge:
         self._lock = threading.RLock()
 
     def get_agent(self) -> Any:
+        from core.reset_handler import consume_reset_flag_once
+
+        consume_reset_flag_once()
         if AGENT_CORE_CTOR is None:
             raise RuntimeError(
                 "RAG 能力加载失败，请检查项目依赖与目录结构。"

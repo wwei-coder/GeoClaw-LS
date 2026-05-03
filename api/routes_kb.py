@@ -8,8 +8,10 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 
 from api.context import APP_ROOT, MAX_UPLOAD_BYTES, bridge
+from services.knowledge_base_service import KnowledgeBaseService
 
 router = APIRouter()
+service = KnowledgeBaseService()
 KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 KB_DATA_DIR = APP_ROOT / "data"
 
@@ -38,45 +40,42 @@ def _reserve_unique_path(base_dir: Path, file_name: str) -> Path:
 @router.post("/api/kb/sync")
 def sync_kb():
     def _inner(agent: Any):
-        return agent.sync_knowledge_base_now()
+        return service.sync(agent)
 
     return bridge.with_agent(_inner)
 
 @router.get("/api/kb/status")
 def kb_status():
     def _inner(agent: Any):
-        return agent.get_knowledge_base_status()
+        return service.status(agent)
 
     return bridge.with_agent(_inner)
 
 @router.get("/api/kb/documents")
 def kb_documents():
     def _inner(agent: Any):
-        return {"documents": agent.get_document_index_stats()}
+        return service.documents(agent)
 
     return bridge.with_agent(_inner)
 
 @router.get("/api/kb/diagnostics")
 def kb_diagnostics(limit: int = 20):
-    safe_limit = max(1, min(limit, 100))
-
     def _inner(agent: Any):
-        return agent.get_retrieval_diagnostics(limit=safe_limit)
+        return service.diagnostics(agent, limit=limit)
 
     return bridge.with_agent(_inner)
 
 @router.post("/api/kb/rebuild")
 def kb_rebuild():
     def _inner(agent: Any):
-        return agent.rebuild_knowledge_base_now()
+        return service.rebuild(agent)
 
     return bridge.with_agent(_inner)
 
 @router.post("/api/system/reset")
 def system_reset():
     def _inner(agent: Any):
-        agent.factory_reset()
-        return {"ok": True, "message": "已触发系统重置，下一次请求将重新初始化引擎。"}
+        return service.system_reset(agent)
 
     result = bridge.with_agent(_inner)
     bridge.reset_agent()

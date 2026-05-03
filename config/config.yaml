@@ -29,7 +29,7 @@ graph:
     replan_penalty_step: 0.08
   replan_max_attempts: 2
   replan_on_low_quality: true
-  replan_low_quality_threshold: 0.3
+  replan_low_quality_threshold: 0.35
   replan_require_expansion: true
   step_result_max_chars: 9000
 keyword_rerank:
@@ -178,7 +178,7 @@ kb_watcher:
   poll_interval_seconds: 3
   settle_seconds: 2
 observability:
-  enabled: true
+  enabled: false
 synthesis:
   max_evidence_chars: 800
 system:

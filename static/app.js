@@ -4,6 +4,7 @@ const state = {
   settingsItems: [],
   settingsData: {},
   defaultsData: {},
+  configEffective: {},
   selectedPrefix: "",
   selectedPath: "",
   settingsDirty: false,
@@ -1118,12 +1119,37 @@ function markSettingsDirty(flag = true) {
   qs("settingsStatus").style.color = flag ? "#ef4444" : "#10b981";
 }
 
+function renderConfigRuntimeNotice() {
+  const box = qs("configRuntimeNotice");
+  if (!box) return;
+  const effective = state.configEffective || {};
+  if (!effective.provider_locked) {
+    box.classList.add("hidden");
+    box.textContent = "";
+    return;
+  }
+  const provider = String(effective.effective_provider || "ollama");
+  const reason = String(effective.provider_lock_reason || "");
+  const ignored = Array.isArray(effective.ignored_paths) ? effective.ignored_paths.join(", ") : "";
+  const parts = [
+    `当前实际生效 provider：${provider}`,
+    reason || "当前版本存在 provider 锁定。",
+  ];
+  if (ignored) {
+    parts.push(`已忽略配置路径：${ignored}`);
+  }
+  box.textContent = parts.join("；");
+  box.classList.remove("hidden");
+}
+
 async function loadSettings() {
   const data = await api("/api/config");
   state.settingsItems = data.items || [];
   state.settingsData = data.data || {};
   state.defaultsData = data.defaults || {};
+  state.configEffective = data.effective || {};
   state.selectedPrefix = "";
+  renderConfigRuntimeNotice();
   renderTree();
   renderSettingsForm();
   renderHint("");
@@ -1475,13 +1501,19 @@ function bindEvents() {
   });
 
   qs("saveSettingsBtn").addEventListener("click", async () => {
-    await api("/api/config", {
+    const result = await api("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ data: state.settingsData }),
     });
+    state.configEffective = result.effective || state.configEffective || {};
+    renderConfigRuntimeNotice();
     markSettingsDirty(false);
-    await uiAlert("参数已保存，部分参数需重启后生效。", "保存成功");
+    const lockReason = String((result && result.warning) || "");
+    const msg = lockReason
+      ? `参数已保存。${lockReason} 部分参数需重启后生效。`
+      : "参数已保存，部分参数需重启后生效。";
+    await uiAlert(msg, "保存成功");
   });
 
   qs("resetBtn").addEventListener("click", async () => {

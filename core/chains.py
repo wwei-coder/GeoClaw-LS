@@ -10,19 +10,19 @@ from collections import deque
 from typing import Dict, List, Any, Optional
 from loguru import logger
 from utils.ollama_client import ask_ollama, ask_ollama_stream, ask_ollama_async, ask_ollama_stream_async
-import core.prompts as prompts
+from agent.brain.prompt_catalog import get_prompt_catalog
 from core.planner import plan_task, plan_task_async
-from memory.summary_memory import summarize_dialog
+from capabilities.memory.summary import summarize_dialog
 from core.question_classifier import is_complex_question, is_follow_up_question, is_follow_up_question_async
 from core.context_judge import judge_context_relevance, judge_context_relevance_async
-from rag.diagnostics import record_retrieval_metrics
-from rag.quality import (
+from capabilities.rag.retrieval.diagnostics import record_retrieval_metrics
+from capabilities.rag.retrieval.quality import (
     evaluate_retrieval_quality,
     fast_path_target,
     is_fast_path_good_enough,
     is_low_retrieval_quality,
 )
-from rag.retriever import (
+from capabilities.rag.retrieval.retriever import (
     append_unique_chunks,
     apply_question_filters,
     build_dual_queries,
@@ -120,7 +120,7 @@ class SmallTalkChain(Chain):
 
     def _call(self, inputs: Dict[str, Any], _run_manager: Optional[CallbackManagerForChainRun] = None) -> Dict[str, Any]:
         question = inputs["question"]
-        prompt = prompts.SMALL_TALK_PROMPT.format(question=question)
+        prompt = get_prompt_catalog().render("small_talk", question=question)
         final_answer = ask_ollama(prompt, temperature=self.agent_core.temperature).strip()
         
         sid = self.agent_core.get_active_session_id()
@@ -316,7 +316,7 @@ class RetrieverChain(Chain):
         return apply_question_filters(question, chunks)
 
     def _chunk_similarity_score(self, chunk: Dict[str, Any]) -> float:
-        from rag.quality import chunk_similarity_score
+        from capabilities.rag.retrieval.quality import chunk_similarity_score
 
         return chunk_similarity_score(chunk)
 
@@ -337,43 +337,49 @@ class RetrieverChain(Chain):
         return rerank_merged_chunks(query, chunks, top_k=top_k, reranker=reranker)
 
     def _rewrite_query(self, question: str) -> str:
+        prompt = get_prompt_catalog().render("semantic_rewrite", question=question)
         return rewrite_query(
             question,
             ask_fn=ask_ollama,
-            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            semantic_rewrite_prompt=prompt,
             rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
         )
 
     async def _rewrite_query_async(self, question: str) -> str:
+        prompt = get_prompt_catalog().render("semantic_rewrite", question=question)
         return await rewrite_query_async(
             question,
             ask_async_fn=ask_ollama_async,
-            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
+            semantic_rewrite_prompt=prompt,
             rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
         )
 
     def _build_dual_queries(self, question: str) -> List[str]:
+        semantic_prompt = get_prompt_catalog().render("semantic_rewrite", question=question)
+        keyword_prompt = get_prompt_catalog().render("keyword_expansion", question=question)
         return build_dual_queries(
             question,
             ask_fn=ask_ollama,
-            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
-            keyword_expansion_prompt=prompts.KEYWORD_EXPANSION_PROMPT,
+            semantic_rewrite_prompt=semantic_prompt,
+            keyword_expansion_prompt=keyword_prompt,
             semantic_rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
             keyword_expansion_temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION,
         )
 
     async def _build_dual_queries_async(self, question: str) -> List[str]:
+        semantic_prompt = get_prompt_catalog().render("semantic_rewrite", question=question)
+        keyword_prompt = get_prompt_catalog().render("keyword_expansion", question=question)
         return await build_dual_queries_async(
             question,
             ask_async_fn=ask_ollama_async,
-            semantic_rewrite_prompt=prompts.SEMANTIC_REWRITE_PROMPT,
-            keyword_expansion_prompt=prompts.KEYWORD_EXPANSION_PROMPT,
+            semantic_rewrite_prompt=semantic_prompt,
+            keyword_expansion_prompt=keyword_prompt,
             semantic_rewrite_temperature=LLM_TEMPERATURE_SEMANTIC_REWRITE,
             keyword_expansion_temperature=LLM_TEMPERATURE_KEYWORD_EXPANSION,
         )
 
     def _ensure_metrics(self):
-        from rag.diagnostics import ensure_metrics_state
+        from capabilities.rag.retrieval.diagnostics import ensure_metrics_state
 
         ensure_metrics_state(self, RETRIEVAL_METRICS_WINDOW)
 
@@ -422,7 +428,7 @@ class RetrieverChain(Chain):
         question = inputs["question"]
         metadata_filter = None
         try:
-            filter_prompt = prompts.METADATA_FILTER_PROMPT.format(question=question)
+            filter_prompt = get_prompt_catalog().render("metadata_filter", question=question)
             filter_json = ask_ollama(filter_prompt, temperature=LLM_TEMPERATURE_METADATA_FILTER).strip()
             metadata_filter = self._parse_metadata_filter(filter_json)
             if metadata_filter:
@@ -575,7 +581,7 @@ class RetrieverChain(Chain):
         question = inputs["question"]
         metadata_filter = None
         try:
-            filter_prompt = prompts.METADATA_FILTER_PROMPT.format(question=question)
+            filter_prompt = get_prompt_catalog().render("metadata_filter", question=question)
             filter_json = await ask_ollama_async(filter_prompt, temperature=LLM_TEMPERATURE_METADATA_FILTER)
             metadata_filter = self._parse_metadata_filter(filter_json)
             if metadata_filter:
@@ -838,10 +844,11 @@ class SynthesisChain(Chain):
                 prefs.append(f"- {k}: {v}")
             user_prefs_str = "\n\n【用户偏好与习惯】\n" + "\n".join(prefs) + "\n请严格遵守上述用户偏好。"
 
-        final_prompt = prompts.FINAL_ANSWER_PROMPT.format(
+        final_prompt = get_prompt_catalog().render(
+            "synthesis_final_answer",
             question=question,
             step_results=full_steps,
-            kb_evidence=kb_evidence + user_prefs_str
+            kb_evidence=kb_evidence + user_prefs_str,
         )
 
         final_answer = ""
@@ -933,10 +940,11 @@ class SynthesisChain(Chain):
                 prefs.append(f"- {k}: {v}")
             user_prefs_str = "\n\n【用户偏好与习惯】\n" + "\n".join(prefs) + "\n请严格遵守上述用户偏好。"
 
-        final_prompt = prompts.FINAL_ANSWER_PROMPT.format(
+        final_prompt = get_prompt_catalog().render(
+            "synthesis_final_answer",
             question=question,
             step_results=full_steps,
-            kb_evidence=kb_evidence + user_prefs_str
+            kb_evidence=kb_evidence + user_prefs_str,
         )
 
         final_answer = ""

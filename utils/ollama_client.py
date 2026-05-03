@@ -8,7 +8,6 @@ from typing import Generator, AsyncGenerator, Optional, Any, Dict
 from opentelemetry import trace
 from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
 from utils.logger import logger
-
 from core.config import (
     LLM_PROVIDER,
     OLLAMA_URL,
@@ -29,11 +28,9 @@ _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 _MAX_RETRIES = 2
 _BACKOFF_BASE = 0.6
 
-
 class OllamaError(RuntimeError):
     """统一 LLM 客户端异常（兼容旧命名）。"""
     pass
-
 
 def _format_error(error: Exception) -> str:
     text = str(error).strip()
@@ -41,15 +38,11 @@ def _format_error(error: Exception) -> str:
         return f"{type(error).__name__}: {text}"
     return type(error).__name__
 
-
 def _backoff_sleep_seconds(attempt_index: int) -> float:
     return _BACKOFF_BASE * (2 ** attempt_index)
 
-
 def _is_openai_compatible_provider() -> bool:
-    # Project runs in local-only mode: remote API providers are disabled.
     return False
-
 
 def _extract_status_code(error: Exception) -> Optional[int]:
     text = str(error)
@@ -61,7 +54,6 @@ def _extract_status_code(error: Exception) -> Optional[int]:
     except Exception:
         return None
 
-
 def _should_try_local_ollama_fallback(error: Exception) -> bool:
     if not _is_openai_compatible_provider():
         return False
@@ -72,19 +64,16 @@ def _should_try_local_ollama_fallback(error: Exception) -> bool:
     status_code = _extract_status_code(error)
     return status_code in _RETRYABLE_STATUS_CODES if status_code is not None else False
 
-
 def _is_retryable_exception(error: Exception) -> bool:
     if isinstance(error, (requests.RequestException, httpx.RequestError)):
         return True
     status_code = _extract_status_code(error)
     return status_code in _RETRYABLE_STATUS_CODES if status_code is not None else False
 
-
 def _local_ollama_timeout(timeout: Optional[int], stream: bool) -> int:
     if timeout is not None:
         return timeout
     return OLLAMA_STREAM_TIMEOUT if stream else OLLAMA_TIMEOUT
-
 
 def _make_local_ollama_payload(prompt: str, temperature: float, stream: bool) -> Dict[str, Any]:
     return {
@@ -93,7 +82,6 @@ def _make_local_ollama_payload(prompt: str, temperature: float, stream: bool) ->
         "temperature": temperature,
         "stream": stream,
     }
-
 
 def _ask_local_ollama_nonstream_sync(prompt: str, temperature: float, timeout: Optional[int]) -> str:
     payload = _make_local_ollama_payload(prompt, temperature, stream=False)
@@ -108,7 +96,6 @@ def _ask_local_ollama_nonstream_sync(prompt: str, temperature: float, timeout: O
     data = resp.json()
     return data.get("response", "") or ""
 
-
 async def _ask_local_ollama_nonstream_async(prompt: str, temperature: float, timeout: Optional[int]) -> str:
     payload = _make_local_ollama_payload(prompt, temperature, stream=False)
     async with httpx.AsyncClient(timeout=_local_ollama_timeout(timeout, stream=False)) as client:
@@ -122,7 +109,6 @@ async def _ask_local_ollama_nonstream_async(prompt: str, temperature: float, tim
     data = resp.json()
     return data.get("response", "") or ""
 
-
 def _resolve_target_url(custom_url: Optional[str] = None) -> str:
     if custom_url:
         return custom_url.strip()
@@ -135,12 +121,10 @@ def _resolve_target_url(custom_url: Optional[str] = None) -> str:
         return base_url.rstrip("/") + "/chat/completions"
     return OLLAMA_URL
 
-
 def _resolve_model_name(model: Optional[str] = None) -> str:
     if model:
         return model
     return LLM_API_MODEL if _is_openai_compatible_provider() else OLLAMA_MODEL
-
 
 def _resolve_timeout(timeout: Optional[int], stream: bool) -> int:
     if timeout is not None:
@@ -149,7 +133,6 @@ def _resolve_timeout(timeout: Optional[int], stream: bool) -> int:
         return LLM_API_STREAM_TIMEOUT if stream else LLM_API_TIMEOUT
     return OLLAMA_STREAM_TIMEOUT if stream else OLLAMA_TIMEOUT
 
-
 def _resolve_headers() -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if _is_openai_compatible_provider():
@@ -157,7 +140,6 @@ def _resolve_headers() -> Dict[str, str]:
             raise OllamaError("当前 provider 为 openai_compatible，但未配置 models.api.api_key 或 LLM_API_KEY")
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
     return headers
-
 
 def _make_payload(
     prompt: str,
@@ -183,7 +165,6 @@ def _make_payload(
         "stream": stream,
     }
 
-
 def _parse_nonstream_response(response: requests.Response) -> str:
     if response.status_code != 200:
         raise OllamaError(f"LLM API 调用失败，状态码 {response.status_code}: {response.text}")
@@ -196,14 +177,12 @@ def _parse_nonstream_response(response: requests.Response) -> str:
         return message.get("content", "") or ""
     return data.get("response", "") or ""
 
-
 def _extract_stream_text_openai_chunk(chunk: Dict[str, Any]) -> str:
     choices = chunk.get("choices") or []
     if not choices:
         return ""
     delta = choices[0].get("delta") or {}
     return delta.get("content", "") or ""
-
 
 def _iter_stream_text_requests(resp: requests.Response) -> Generator[str, None, None]:
     if _is_openai_compatible_provider():
@@ -237,7 +216,6 @@ def _iter_stream_text_requests(resp: requests.Response) -> Generator[str, None, 
             text_chunk = chunk.get("response", "") or ""
             if text_chunk:
                 yield text_chunk
-
 
 def ask_ollama(
     prompt: str,
@@ -300,7 +278,6 @@ def ask_ollama(
         if last_exc is not None:
             raise OllamaError(f"LLM 网络请求失败: {_format_error(last_exc)}") from last_exc
         raise OllamaError("LLM 调用在重试后仍失败")
-
 
 def ask_ollama_stream(
     prompt: str,
@@ -475,7 +452,6 @@ async def ask_ollama_async(
         if last_exc is not None:
             raise OllamaError(f"LLM 网络请求失败: {_format_error(last_exc)}") from last_exc
         raise OllamaError("LLM 异步调用在重试后仍失败")
-
 
 async def ask_ollama_stream_async(
     prompt: str,

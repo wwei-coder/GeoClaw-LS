@@ -673,6 +673,17 @@ textarea:focus-visible,
   background: #f8fbff;
 }
 
+.config-runtime-notice {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #f8d598;
+  background: #fff9eb;
+  color: #7a4a00;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .settings-title {
   font-size: 20px;
   font-weight: 760;

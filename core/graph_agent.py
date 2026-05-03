@@ -5,6 +5,7 @@ from typing import TypedDict, Annotated, List, Dict, Any, Union, Optional
 from langgraph.graph import StateGraph, END
 from agent.executor import AgentExecutor
 from agent.state import AgentTask, AgentStep, Artifact
+from agent.runtime import RuntimePersistence
 from core import prompts
 from tools.registry import get_tool_registry
 from utils.ollama_client import ask_ollama_async
@@ -60,9 +61,12 @@ class AgentState(TypedDict):
     answer_confidence_label: str
 
 class GraphAgent:
+    """LangGraph workflow runtime implementation (phase-5 keeps structure stable)."""
+
     def __init__(self, agent_core: Any):
         self.core = agent_core
         self.executor = AgentExecutor(get_tool_registry())
+        self.persistence = RuntimePersistence(agent_core)
         self.app_async = self._build_async_graph()
 
     def _task_from_state(self, state: AgentState) -> AgentTask:
@@ -110,31 +114,13 @@ class GraphAgent:
         )
 
     def _safe_save_task(self, task: AgentTask) -> None:
-        store = getattr(self.core, "task_store", None)
-        if not store:
-            return
-        try:
-            store.save_task(task, session_id=self.core.get_active_session_id())
-        except Exception as exc:
-            logger.warning(f"[TaskStore] 保存任务失败（已忽略）: {exc}")
+        self.persistence.save_task(task)
 
     def _safe_save_step(self, task_id: str, step: AgentStep, position: int) -> None:
-        store = getattr(self.core, "task_store", None)
-        if not store:
-            return
-        try:
-            store.save_step(task_id=task_id, step=step, position=position)
-        except Exception as exc:
-            logger.warning(f"[TaskStore] 保存步骤失败（已忽略）: {exc}")
+        self.persistence.save_step(task_id=task_id, step=step, position=position)
 
     def _safe_save_artifact(self, task_id: str, artifact: Artifact) -> None:
-        store = getattr(self.core, "task_store", None)
-        if not store:
-            return
-        try:
-            store.save_artifact(task_id=task_id, artifact=artifact)
-        except Exception as exc:
-            logger.warning(f"[TaskStore] 保存产物失败（已忽略）: {exc}")
+        self.persistence.save_artifact(task_id=task_id, artifact=artifact)
 
     def _normalize_artifacts_with_task(self, task_id: str, artifacts: List[Any]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
@@ -246,8 +232,15 @@ class GraphAgent:
              self._stream_thought("\n> [思考] 正在规划任务步骤...\n")
 
         try:
-            res = await self.core.planner.ainvoke({"question": question})
-            plan = res["plan"]
+            brain = getattr(self.core, "brain", None)
+            if brain is not None:
+                brain_plan = await brain.plan(question)
+                plan = dict(brain_plan.raw_plan or {})
+                trace_text = brain_plan.trace or f"Planner: {len(plan.get('steps', []))} steps"
+            else:
+                res = await self.core.planner.ainvoke({"question": question})
+                plan = res["plan"]
+                trace_text = res.get("trace", "Planner: Done")
             task = self.executor.build_task(
                 user_query=state["question"],
                 plan_steps=plan.get("steps", []),
@@ -263,7 +256,6 @@ class GraphAgent:
                 "task": task.to_dict(),
                 "task_id": task.id,
                 "steps": self._sync_legacy_steps(task),
-                "trace": [res.get("trace", "Planner: Done")],
                 "current_step_index": 0,
                 "step_results": [],
                 "tool_results_v2": [],
@@ -271,20 +263,30 @@ class GraphAgent:
                 "artifacts": [],
                 "cancel_requested": False,
                 "replanning_needed": False,
-                "feedback": ""
+                "feedback": "",
+                "trace": [trace_text],
             }
         except Exception as e:
             return {"error": str(e), "trace": [f"Planner Error: {e}"]}
 
     async def _node_decision_async(self, state: AgentState) -> Dict[str, Any]:
         self._stream_thought("\n> [思考] 正在评估上下文和决策...\n")
-        res = await self.core.decision.ainvoke({
-            "question": state["question"],
-            "plan": state["plan"]
-        })
-        
-        force_tool = res["force_tool"]
-        final_use_kb = res["final_use_kb"]
+        brain = getattr(self.core, "brain", None)
+        if brain is not None:
+            brain_decision = await brain.decide(question=state["question"], plan=state["plan"])
+            force_tool = brain_decision.force_tool
+            final_use_kb = brain_decision.need_kb
+            context_score = brain_decision.context_score
+            trace_text = brain_decision.reason or f"Decision: use_kb={final_use_kb}, force={force_tool}"
+        else:
+            res = await self.core.decision.ainvoke({
+                "question": state["question"],
+                "plan": state["plan"]
+            })
+            force_tool = res["force_tool"]
+            final_use_kb = res["final_use_kb"]
+            context_score = res["context_score"]
+            trace_text = res.get("trace", "Decision: Done")
         current_steps = list(state["steps"])
 
         if force_tool == "CALCULATOR":
@@ -310,12 +312,12 @@ class GraphAgent:
         for pos, step in enumerate(task.steps):
             self._safe_save_step(task.id, step, pos)
         return {
-            "context_score": res["context_score"],
+            "context_score": context_score,
             "force_tool": force_tool,
             "need_kb": final_use_kb,
             "steps": self._sync_legacy_steps(task),
             "task": task.to_dict(),
-            "trace": [res.get("trace", "Decision: Done")]
+            "trace": [trace_text]
         }
 
     async def _node_executor_async(self, state: AgentState) -> Dict[str, Any]:
@@ -535,16 +537,29 @@ class GraphAgent:
         
         cb = getattr(self.core, "_current_stream_callback", None)
         
-        syn_res = await self.core.synthesis.ainvoke({
-            "question": state["question"],
-            "step_results": state["step_results"],
-            "kb_chunks": [], 
-            "sources": state["sources"],
-            "canceled": False,
-            "stream_callback": cb
-        })
+        brain = getattr(self.core, "brain", None)
+        if brain is not None:
+            brain_answer = await brain.synthesize(
+                question=state["question"],
+                step_results=state["step_results"],
+                kb_chunks=[],
+                sources=state["sources"],
+                canceled=False,
+                stream_callback=cb,
+            )
+            synthesized_answer = brain_answer.answer
+        else:
+            syn_res = await self.core.synthesis.ainvoke({
+                "question": state["question"],
+                "step_results": state["step_results"],
+                "kb_chunks": [],
+                "sources": state["sources"],
+                "canceled": False,
+                "stream_callback": cb
+            })
+            synthesized_answer = syn_res["final_answer"]
         confidence_score, confidence_label = self._grade_answer_confidence(state)
-        final_answer = f"【系统可信度（证据）：{confidence_label}】\n{syn_res['final_answer']}"
+        final_answer = f"【系统可信度（证据）：{confidence_label}】\n{synthesized_answer}"
         if confidence_label == "低":
             final_answer += "\n\n【需补充信息】当前证据支撑较弱，建议补充更具体的问题条件、关键词或权威资料来源。"
         
@@ -569,36 +584,49 @@ class GraphAgent:
 
     async def _node_reviewer_async(self, state: AgentState) -> Dict[str, Any]:
         count = state.get("review_count", 0)
+        brain = getattr(self.core, "brain", None)
+        if brain is not None:
+            self._stream_thought("\n> [思考] 正在审核回答质量...\n")
+            brain_review = await brain.review(
+                question=state["question"],
+                answer=state["final_answer"],
+                review_count=count,
+            )
+            if not brain_review.is_satisfactory:
+                self._stream_thought(f"> [审核未通过] -> {brain_review.feedback}\n")
+                return {
+                    "is_satisfactory": False,
+                    "feedback": brain_review.feedback,
+                    "review_count": brain_review.review_count,
+                }
+            self._stream_thought("> [审核通过] 回答质量达标\n")
+            return {"is_satisfactory": True}
+
         if count >= 2:
-             return {"is_satisfactory": True}
+            return {"is_satisfactory": True}
 
         self._stream_thought("\n> [思考] 正在审核回答质量...\n")
-        
         prompt = prompts.REVIEW_PROMPT.format(
             question=state["question"],
             answer=state["final_answer"]
         )
-        
         try:
             raw = (await ask_ollama_async(prompt)).strip()
             if "```json" in raw:
                 raw = raw.split("```json")[1].split("```")[0]
             elif "```" in raw:
                 raw = raw.split("```")[1].split("```")[0]
-            
             res = json.loads(raw)
             is_ok = (res.get("status") == "PASS")
-            
             if not is_ok:
-                 self._stream_thought(f"> [审核未通过] {res.get('reason')} -> {res.get('suggestion')}\n")
-                 return {
-                     "is_satisfactory": False,
-                     "feedback": res.get("suggestion"),
-                     "review_count": count + 1
-                 }
-            else:
-                 self._stream_thought("> [审核通过] 回答质量达标\n")
-                 return {"is_satisfactory": True}
+                self._stream_thought(f"> [审核未通过] {res.get('reason')} -> {res.get('suggestion')}\n")
+                return {
+                    "is_satisfactory": False,
+                    "feedback": res.get("suggestion"),
+                    "review_count": count + 1
+                }
+            self._stream_thought("> [审核通过] 回答质量达标\n")
+            return {"is_satisfactory": True}
         except Exception as e:
             err_text = str(e)
             match = re.search(r"状态码\s+(\d+)", err_text)

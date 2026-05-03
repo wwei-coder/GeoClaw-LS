@@ -5,6 +5,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, Optional
+from agent.runtime.schemas import AgentRequestContext
 from utils.logger import logger
 from .state import AgentTask
 from .task_store import TaskStore
@@ -50,21 +51,25 @@ class TaskRunner:
         self,
         task_id: str,
         message: str,
-        session_id: Optional[int],
-        file_id: Optional[str],
-        resumed_from: Optional[str],
+        request_context: AgentRequestContext,
+        cancel_event: threading.Event,
     ) -> Dict[str, Any]:
         try:
             self.task_store.set_task_cancel_requested(task_id, False)
-            if session_id:
-                self.agent_core.switch_session(int(session_id))
+            resumed_from = str((request_context.metadata or {}).get("resumed_from") or "").strip() or None
+            exec_ctx = AgentRequestContext(
+                session_id=request_context.session_id,
+                file_id=request_context.file_id,
+                files=list(request_context.files or []),
+                run_mode="background",
+                task_id=task_id,
+                cancel_event=cancel_event,
+                metadata=dict(request_context.metadata or {}),
+            )
             result = asyncio.run(
                 self.agent_core.chat_async(
                     message,
-                    cancel_event=self.running_tasks[task_id]["cancel_event"],
-                    file_id=file_id,
-                    task_id=task_id,
-                    run_mode="background",
+                    request_context=exec_ctx,
                     resumed_from=resumed_from,
                 )
             )
@@ -91,11 +96,25 @@ class TaskRunner:
         file_id: Optional[str] = None,
         resumed_from: Optional[str] = None,
         task_id: Optional[str] = None,
+        request_context: Optional[AgentRequestContext] = None,
     ) -> Dict[str, Any]:
         text = str(message or "").strip()
         if not text:
             raise ValueError("任务内容不能为空")
         target_task_id = str(task_id or self._new_task_id())
+        req_ctx = request_context or AgentRequestContext(
+            session_id=session_id,
+            file_id=(file_id or "").strip() or None,
+            files=[],
+            run_mode="background",
+            task_id=target_task_id,
+            metadata={},
+        )
+        req_ctx.run_mode = "background"
+        req_ctx.task_id = target_task_id
+        req_ctx.metadata = dict(req_ctx.metadata or {})
+        if resumed_from:
+            req_ctx.metadata["resumed_from"] = str(resumed_from)
         with self._lock:
             if target_task_id in self.running_tasks:
                 raise ValueError("该任务正在运行中，请勿重复提交")
@@ -106,11 +125,11 @@ class TaskRunner:
                 run_mode="background",
                 cancel_requested=False,
                 resumed_from=resumed_from,
-                metadata={"file_id": file_id or "", "submitted_at": _iso_now()},
+                metadata={"file_id": req_ctx.file_id or "", "submitted_at": _iso_now()},
             )
-            self.task_store.save_task(pre_task, session_id=session_id)
+            self.task_store.save_task(pre_task, session_id=req_ctx.session_id)
             cancel_event = threading.Event()
-            fut = self.executor.submit(self._run_task, target_task_id, text, session_id, file_id, resumed_from)
+            fut = self.executor.submit(self._run_task, target_task_id, text, req_ctx, cancel_event)
             self.running_tasks[target_task_id] = {
                 "future": fut,
                 "cancel_event": cancel_event,
@@ -149,11 +168,17 @@ class TaskRunner:
         message = record.get("user_query", "")
         session_id = record.get("session_id")
         file_id = metadata.get("file_id")
-        return self.submit_task(
-            message=message,
+        req_ctx = AgentRequestContext(
             session_id=int(session_id) if str(session_id or "").isdigit() else None,
             file_id=file_id if isinstance(file_id, str) else None,
+            files=[],
+            run_mode="background",
+            metadata={"retry_step_id": metadata.get("retry_step_id"), "source_task_id": str(task_id)},
+        )
+        return self.submit_task(
+            message=message,
             resumed_from=str(task_id),
+            request_context=req_ctx,
         )
 
     def resume_task(self, task_id: str) -> Dict[str, Any]:
@@ -168,11 +193,17 @@ class TaskRunner:
             raise ValueError("缺少任务问题内容，无法继续执行")
         session_id = record.get("session_id")
         file_id = metadata.get("file_id")
-        return self.submit_task(
-            message=message,
+        req_ctx = AgentRequestContext(
             session_id=int(session_id) if str(session_id or "").isdigit() else None,
             file_id=file_id if isinstance(file_id, str) else None,
+            files=[],
+            run_mode="background",
+            metadata={"source_task_id": str(task_id)},
+        )
+        return self.submit_task(
+            message=message,
             resumed_from=str(task_id),
+            request_context=req_ctx,
         )
 
     def shutdown(self) -> None:

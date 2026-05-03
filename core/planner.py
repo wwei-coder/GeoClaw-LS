@@ -1,12 +1,11 @@
 from utils.ollama_client import ask_ollama, ask_ollama_async
 import json
 import re
-from core.config import PLANNER_PROMPT
+from agent.brain.prompt_catalog import get_prompt_catalog
+from tools.registry import get_enabled_tool_names
 from utils.logger import logger
 
-ALLOWED_TOOLS = {"RAG", "MEMORY", "LLM", "CALCULATOR", "DISCOVERY", "DATA_PROFILE", "FILE_INSPECTOR"}
 DATA_TOOLS = {"DATA_PROFILE", "FILE_INSPECTOR"}
-
 
 def _has_file_signal(text: str) -> bool:
     q = (text or "").lower()
@@ -28,7 +27,6 @@ def _has_file_signal(text: str) -> bool:
     if any(k in q for k in keywords):
         return True
     return bool(re.search(r"\bfile[_-]?id\b", q, flags=re.IGNORECASE))
-
 
 def _process_planner_response(raw_response: str, question: str) -> dict:
     """Helper to process and sanitize LLM response for planning.
@@ -80,6 +78,7 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
         steps = []
 
     cleaned = []
+    allowed_tools = get_planner_allowed_tools()
     file_signal = _has_file_signal(question)
     for s in steps:
         if not isinstance(s, dict):
@@ -100,7 +99,7 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
         if not task or "要做什么" in task or "给工具的输入" in task:
             task = question
             
-        if tool not in ALLOWED_TOOLS:
+        if tool not in allowed_tools:
             tool = "LLM"
         if tool in DATA_TOOLS and not file_signal:
             logger.info("[Planner] 数据工具缺少文件意图信号，降级为 LLM")
@@ -113,13 +112,16 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
     plan["steps"] = cleaned
     return plan
 
+def get_planner_allowed_tools() -> set[str]:
+    return {str(name).upper() for name in get_enabled_tool_names()}
+
 async def plan_task_async(question: str):
     """Async version of plan_task"""
-    prompt = PLANNER_PROMPT.format(question=question)
+    prompt = get_prompt_catalog().render("planner", question=question)
     raw = await ask_ollama_async(prompt)
     return _process_planner_response(raw, question)
 
 def plan_task(question: str):
-    prompt = PLANNER_PROMPT.format(question=question)
+    prompt = get_prompt_catalog().render("planner", question=question)
     raw = ask_ollama(prompt)
     return _process_planner_response(raw, question)

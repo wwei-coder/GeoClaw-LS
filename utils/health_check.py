@@ -19,7 +19,6 @@ def check_file(path, desc):
         logger.error(f"❌ {desc} 缺失: {path}")
         return False
 
-
 def check_import(module_name, desc, pip_hint=None):
     try:
         importlib.import_module(module_name)
@@ -125,4 +124,9 @@ def run_health_check():
     return all_ok
 
 if __name__ == "__main__":
-    run_health_check()
+    ok = run_health_check()
+    if ok:
+        logger.info("✅ 健康检查通过（HEALTH CHECK PASS）")
+        sys.exit(0)
+    logger.error("❌ 健康检查失败（HEALTH CHECK FAIL）")
+    sys.exit(1)

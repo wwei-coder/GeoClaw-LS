@@ -3,7 +3,7 @@ import json
 import time
 import argparse
 from statistics import mean
-from memory.vector_store import VectorStore
+from storage.vector.vector_store import VectorStore
 from core.config import DATA_DIR
 
 def load_queries(path: str):
@@ -21,14 +21,12 @@ def load_queries(path: str):
     with open(path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
-
 def percentile(values, p):
     if not values:
         return 0.0
     values = sorted(values)
     idx = int(round((p / 100.0) * (len(values) - 1)))
     return float(values[max(0, min(idx, len(values) - 1))])
-
 
 def benchmark(store: VectorStore, queries, repeats=3, top_k=4, search_mode="hybrid"):
     latencies = []
@@ -49,7 +47,6 @@ def benchmark(store: VectorStore, queries, repeats=3, top_k=4, search_mode="hybr
         "cache_hit_rate": stats.get("cache_hit_rate", 0.0),
         "cache_size": stats.get("cache_size", 0)
     }
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -92,7 +89,6 @@ def main():
     with open(args.report, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     print(json.dumps(report, ensure_ascii=False, indent=2))
-
 
 if __name__ == "__main__":
     main()

@@ -1,11 +1,14 @@
 import os
 import shutil
 import time
+import threading
 from utils.logger import logger
 from core.config import FINGERPRINT_PATH, BASE_DIR, DB_PATH
 
 RESET_FLAG_FILE = os.path.join(BASE_DIR, ".need_reset")
 VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
+_RESET_CHECK_LOCK = threading.Lock()
+_RESET_CHECK_PERFORMED = False
 
 def _retry_io(action, attempts=3, delay=0.4):
     last_error = None
@@ -77,3 +80,12 @@ def perform_reset_if_needed():
 
         logger.info("✨ 系统重置流程结束，即将开始初始化...")
         time.sleep(1) # Give user a moment to see the message
+
+def consume_reset_flag_once() -> None:
+    """Run reset consumption at most once per process."""
+    global _RESET_CHECK_PERFORMED
+    with _RESET_CHECK_LOCK:
+        if _RESET_CHECK_PERFORMED:
+            return
+        _RESET_CHECK_PERFORMED = True
+    perform_reset_if_needed()
