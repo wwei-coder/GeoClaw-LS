@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-
 def _iso_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 
 @dataclass
 class Artifact:
@@ -59,7 +56,6 @@ class Artifact:
             "metadata": dict(self.metadata or {}),
             "created_at": self.created_at,
         }
-
 
 @dataclass
 class AgentStep:
@@ -127,7 +123,6 @@ class AgentStep:
 
     def to_legacy_step(self) -> Dict[str, str]:
         return {"tool": self.tool_name, "task": self.instruction}
-
 
 @dataclass
 class AgentTask:
@@ -198,7 +193,6 @@ class AgentTask:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
-
 
 @dataclass
 class AgentState:

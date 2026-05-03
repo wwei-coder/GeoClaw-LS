@@ -13,7 +13,6 @@ from api.context import (
 
 router = APIRouter()
 
-
 @router.get("/api/config")
 def get_config():
     data = read_yaml(CONFIG_PATH)
@@ -23,7 +22,6 @@ def get_config():
         "defaults": defaults,
         "items": flatten_config(data),
     }
-
 
 @router.put("/api/config")
 def save_config(req: SaveConfigRequest):
@@ -49,13 +47,11 @@ def reset_config():
     write_yaml(CONFIG_PATH, defaults)
     return {"ok": True}
 
-
 @router.get("/api/config/export")
 def export_config():
     data = read_yaml(CONFIG_PATH)
     dumped = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     return PlainTextResponse(content=dumped, media_type="text/yaml; charset=utf-8")
-
 
 @router.post("/api/config/import")
 async def import_config(file: UploadFile = File(...)):

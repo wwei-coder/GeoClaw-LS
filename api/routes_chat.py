@@ -6,11 +6,9 @@ from api.context import ChatRequest, STATIC_DIR, bridge, parse_history_text
 
 router = APIRouter()
 
-
 @router.get("/")
 def home():
     return FileResponse(str(STATIC_DIR / "index.html"))
-
 
 @router.get("/api/bootstrap")
 def bootstrap():
@@ -26,7 +24,6 @@ def bootstrap():
         }
 
     return bridge.with_agent(_inner)
-
 
 @router.post("/api/chat")
 def chat(req: ChatRequest):

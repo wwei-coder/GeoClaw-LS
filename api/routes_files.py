@@ -1,13 +1,10 @@
 from pathlib import Path
 from typing import Any
-
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-
 from api.context import MAX_UPLOAD_BYTES, bridge, serialize_artifact
 
 router = APIRouter()
-
 
 @router.post("/api/files/upload")
 async def upload_data_file(file: UploadFile = File(...)):
@@ -30,14 +27,12 @@ async def upload_data_file(file: UploadFile = File(...)):
 
     return bridge.with_agent(_inner)
 
-
 @router.get("/api/files")
 def list_uploaded_files():
     def _inner(agent: Any):
         return {"files": agent.file_workspace.list_files()}
 
     return bridge.with_agent(_inner)
-
 
 @router.get("/api/artifacts/{artifact_id}")
 def download_artifact(artifact_id: str):
@@ -77,7 +72,6 @@ def download_artifact(artifact_id: str):
         media_type=artifact.get("mime_type") or "application/octet-stream",
         filename=artifact.get("name") or f"{artifact_id}.bin",
     )
-
 
 @router.get("/api/artifacts")
 def list_artifacts(limit: int = 50):

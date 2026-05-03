@@ -1,20 +1,16 @@
 from __future__ import annotations
-
 import asyncio
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, Optional
-
 from utils.logger import logger
 from .state import AgentTask
 from .task_store import TaskStore
 
-
 def _iso_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
 
 class TaskRunner:
     """轻量后台任务运行器（本地串行）。"""

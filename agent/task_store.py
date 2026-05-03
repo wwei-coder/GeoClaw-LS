@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import json
 import sqlite3
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
-
 from utils.logger import logger
 from .state import AgentStep, AgentTask, Artifact
-
 
 class TaskStore:
     """Agent 任务持久化存储（基于现有 SQLite 连接）。"""
