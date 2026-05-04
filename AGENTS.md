@@ -6,6 +6,8 @@ GeoClaw-LS 是一个面向地质滑坡防治领域的本地智能助手。项目
 
 当前应用形态是 FastAPI + 原生 WebUI。主入口是 `app.py`，HTTP 路由已拆分到 `api/` 目录。核心运行依赖本地 Ollama，后端维护 SQLite 会话历史与 Agent 任务记录、ChromaDB 向量索引、知识库文档指纹、文件工作区索引，以及可选 Phoenix 观测链路。
 
+当前 Agent 改造已经进入“可审计执行闭环”阶段：Brain Planner 支持结构化规划摘要，Executor 会评估工具结果可用性，GraphAgent 支持受控自动补救、失败熔断、补救指标聚合和轻量证据质量校验。所有这些机制都保持非 CoT 边界，只保存结构化短摘要，不保存完整隐藏推理过程。
+
 项目正在从早期 `core/` 集中式结构，渐进迁移为更清晰的分层结构：
 
 - `api/`：HTTP 路由层。
@@ -30,6 +32,7 @@ GeoClaw-LS 是一个面向地质滑坡防治领域的本地智能助手。项目
 - 本仓库允许本地存在未提交改动；开发时不要误删、回滚或清理用户改动。
 - `workspace/`、`vector_db/`、`long_term_memory.db`、`doc_fingerprint.json`、`.need_reset` 属于运行数据或运行状态文件，除非任务明确要求，不应手动改写或清理。
 - 历史“某次扫描时的分支/文件状态”仅作示例，可能随时间过期；执行任务时应以当前工作区实际状态为准。
+- 当前本地扫描显示：`workspace/` 为未跟踪运行目录；`.gitignore`、多处 `agent/`、`api/`、`core/`、`services/`、`storage/`、`tools/`、`static/styles.css` 等存在未提交改动；`docs/` 和 `tests/` 在工作树中仅作为本地资料/验证目录保留，不上传 GitHub，且已被 `.gitignore` 忽略。开发或提交前必须重新确认这些文件的真实意图，不要用批量清理或重置命令处理。
 
 ## 技术栈
 
@@ -39,6 +42,7 @@ GeoClaw-LS 是一个面向地质滑坡防治领域的本地智能助手。项目
 - Runtime 层：`agent/runtime/` 薄封装 Graph 运行入口和任务/步骤/产物持久化。
 - Capability 层：`capabilities/` 用于隔离 RAG、KG-RAG、未来 AutoML 等业务能力。
 - 工具层：`tools/` 定义 `ToolInput`、`ToolResult`、`BaseTool` 和统一工具注册。
+- 工具闭环：`agent/executor.py` 负责工具结果评估、受控补救决策、补救指标聚合和证据质量检查。
 - 后台任务：本地 `ThreadPoolExecutor` 串行执行，任务、步骤和产物持久化到 SQLite。
 - RAG 检索：ChromaDB、向量检索、BM25、RRF 融合、关键词或模型重排序、检索质量评估、低质量重规划。
 - 嵌入模型：当前配置使用 Ollama embedding，模型为 `qwen3-embedding:4b`。
@@ -205,6 +209,8 @@ API 层通过 `api/context.py` 中的 `RAGBridge` 懒加载并复用单个 `Agen
 - reviewer prompt 与异步 LLM 审核调用
 - 术语修正入口 `normalize_answer_terms()`
 
+Brain Planner 的当前输出协议兼容旧 JSON，同时推荐输出 `need_evidence`、`risk_level`、`reasoning_trace`、`answer_requirements`，步骤可带 `reason`、`expected_output`、`fallback`。`core/planner.py` 会过滤 `chain_of_thought`、`full_reasoning`、`hidden_thoughts`、`详细思考过程` 等禁止字段，并把 `KG_RAG`、`AUTOML` 等默认未启用工具安全降级。
+
 GraphAgent 目前优先委托 `core.brain`：
 
 - planner 节点调用 `brain.plan()`
@@ -222,9 +228,20 @@ GraphAgent 目前优先委托 `core.brain`：
 
 - `GraphRuntime`：薄门面，委托现有 `GraphAgent.run_async()`。
 - `RuntimePersistence`：负责保存 task、step、artifact，优先使用 `TaskRepository`，异常只记录 warning，不中断主流程。
-- `schemas.py`：定义运行时步骤事件、产物事件、执行结果等结构。
+- `schemas.py`：定义运行时请求上下文、步骤事件、产物事件、执行结果等结构。
 
 短期内 `GraphAgent` 仍保留 LangGraph 图结构和主流程，Runtime 层主要承担持久化和运行门面。
+
+### 工具闭环、补救与证据校验
+
+阶段十到十二在 `agent/executor.py` 与 `core/graph_agent.py` 中补齐了执行后闭环：
+
+- `ToolOutcomeAssessment`：判断工具是否成功、结果是否可用、问题类型、建议动作、是否可重试和 fallback 工具。
+- `RemediationAction` / `RemediationDecision`：纯规则生成受控补救动作，支持限次重试、重新规划、请求用户补充和降级回答。
+- `RemediationMetrics`：聚合补救触发、成功、失败、熔断、降级和工具/问题分布，写入 task metadata。
+- `EvidenceQualityAssessment`：轻量检查是否需要证据、是否有来源、检索片段覆盖、引用标记和“资料支持/模型推断”边界。
+
+当前补救机制有硬边界：步骤级每个原始 step 最多补救 1 次，任务级总补救次数最多 2 次；同工具或同问题类型连续失败会熔断。补救、证据和规划 trace 都是结构化短摘要，不暴露完整 CoT。证据质量检查是启发式，不等于完整事实核验，失败时不阻断主回答。
 
 ### Capability 层
 
@@ -325,7 +342,9 @@ GraphAgent 目前优先委托 `core.brain`：
 - `GET /api/kb/documents`：获取文档索引状态。
 - `GET /api/kb/diagnostics`：获取检索诊断信息。
 - `POST /api/kb/rebuild`：强制重建知识库。
+- `POST /api/kb/upload`：上传知识库源文件，支持 `.pdf/.docx/.txt`，保存到 `data/`。
 - `POST /api/system/reset`：触发系统重置并重新初始化 Agent。
+- `POST /api/system/shutdown`：返回响应后延迟关闭本地服务进程。
 - `GET /api/observability/status`：获取 Phoenix 观测链路状态。
 - `POST /api/observability/toggle`：启用或关闭 Phoenix 观测链路，并写回配置。
 - `GET /api/health`：返回应用根目录、配置路径和 Agent 导入状态。
@@ -533,14 +552,23 @@ WebUI 提供：
 
 `docs/` 当前包含：
 
+- `agent_observability_metrics.md`
+- `agent_refactor_phase9.md`
+- `agent_refactor_phase10.md`
+- `agent_refactor_phase11.md`
+- `agent_refactor_phase12.md`
 - `architecture_target.md`
 - `brain_architecture.md`
+- `brain_planner_reasoning_trace.md`
 - `capability_development.md`
+- `controlled_remediation.md`
+- `evidence_quality_checks.md`
 - `kg_rag_architecture.md`
 - `migration_status.md`
 - `regression_checklist.md`
 - `runtime_architecture.md`
 - `storage_architecture.md`
+- `tool_outcome_loop.md`
 - `archive/`：历史阶段记录与删除前迁移说明，包括 `agent_refactor_phase*.md` 和 `compatibility_layers.md`
 
 `docs/regression_checklist.md` 给出了最小手动回归项：
@@ -559,8 +587,8 @@ WebUI 提供：
 自动测试：
 
 - 使用 `python -m pytest`。
-- 本次本地检查已在 Windows + Python 3.14.3 + pytest 9.0.3 环境执行 `python -m pytest`，结果为 `90 passed, 163 warnings`。
-- 当前 warnings 主要来自 Python 3.14 下的 LangChain/Pydantic V1 兼容提示、ChromaDB/FastAPI/Starlette 对 `asyncio.iscoroutinefunction` 的弃用提示，以及 `agent/state.py`、`agent/task_runner.py` 中 `datetime.utcnow()` 的弃用提示；目前未导致测试失败。
+- 本次更新后已在 Windows + Python 3.14.3 + pytest 9.0.3 环境执行 `python -m pytest`，结果为 `119 passed, 168 warnings`。
+- 当前 warnings 主要来自 Python 3.14 下的 LangChain/Pydantic V1 兼容提示、ChromaDB/FastAPI/Starlette 对 `asyncio.iscoroutinefunction` 的弃用提示，以及 `agent/state.py`、`agent/task_runner.py`、`agent/executor.py` 中 `datetime.utcnow()` 的弃用提示；目前未导致测试失败。
 - `docs/archive/agent_refactor_phase8.md` 记录过一次较早的收敛验收：`53 passed, 15 warnings`。后续改动后仍应以当前本地重新运行结果为准。
 - 当前测试文件包括：
   - `test_agent_state.py`
@@ -583,6 +611,7 @@ WebUI 提供：
   - `test_runtime_layer.py`
   - `test_services_layer.py`
   - `test_storage_layer.py`
+  - `test_tool_outcome_loop.py`
   - `test_tool_registry_consistency.py`
   - `test_tool_result.py`
 
@@ -602,7 +631,7 @@ WebUI 提供：
 - 环境变量和密钥：`.env`、`.env.*`
 - 临时文件和构建产物：`tmp/`、`temp/`、`build/`、`dist/`、`*.egg-info/`
 - 上传文件和分析产物：`workspace/uploads/`、`workspace/artifacts/`
-- 本地验证资料：当前 `.gitignore` 还包含 `tests/`、`docs/`；如果后续要把文档或测试作为源码提交，需先明确调整忽略规则和 Git 索引状态。
+- 本地验证资料：当前 `.gitignore` 还包含 `tests/`、`docs/`，这两个目录仅本地保留，不上传 GitHub；如果后续要把文档或测试作为源码提交，需先明确调整忽略规则和 Git 索引状态。
 
 注意：
 

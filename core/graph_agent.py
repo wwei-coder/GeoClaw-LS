@@ -1,9 +1,15 @@
 import operator
 import json
 import re
+import uuid
 from typing import TypedDict, Annotated, List, Dict, Any, Union, Optional
 from langgraph.graph import StateGraph, END
-from agent.executor import AgentExecutor
+from agent.executor import (
+    AgentExecutor,
+    assess_evidence_quality,
+    build_remediation_decision,
+    collect_remediation_metrics,
+)
 from agent.state import AgentTask, AgentStep, Artifact
 from agent.runtime import RuntimePersistence
 from core import prompts
@@ -59,6 +65,11 @@ class AgentState(TypedDict):
     execution_replan_count: int
     answer_confidence_score: float
     answer_confidence_label: str
+    remediation_count: int
+    remediation_stats: Dict[str, Any]
+    unresolved_outcomes: Annotated[List[Dict[str, Any]], operator.add]
+    remediation_metrics: Dict[str, Any]
+    evidence_quality_assessment: Dict[str, Any]
 
 class GraphAgent:
     """LangGraph workflow runtime implementation (phase-5 keeps structure stable)."""
@@ -232,11 +243,34 @@ class GraphAgent:
              self._stream_thought("\n> [思考] 正在规划任务步骤...\n")
 
         try:
+            planner_execution_trace: List[Dict[str, Any]] = []
+            planner_text_trace: List[str] = []
             brain = getattr(self.core, "brain", None)
             if brain is not None:
                 brain_plan = await brain.plan(question)
                 plan = dict(brain_plan.raw_plan or {})
+                plan["steps"] = list(brain_plan.steps or plan.get("steps", []) or [])
+                plan["intent"] = str(brain_plan.intent or plan.get("intent") or "mixed")
+                plan["need_evidence"] = bool(brain_plan.need_evidence)
+                plan["risk_level"] = str(brain_plan.risk_level or plan.get("risk_level") or "low")
+                plan["answer_requirements"] = list(brain_plan.answer_requirements or plan.get("answer_requirements", []) or [])
+                plan["reasoning_trace"] = list(brain_plan.reasoning_trace or plan.get("reasoning_trace", []) or [])
                 trace_text = brain_plan.trace or f"Planner: {len(plan.get('steps', []))} steps"
+                for item in (brain_plan.reasoning_trace or []):
+                    if not isinstance(item, dict):
+                        continue
+                    trace_summary = str(item.get("summary") or "").strip()
+                    if not trace_summary:
+                        continue
+                    trace_type = str(item.get("type") or "review_summary").strip()
+                    planner_execution_trace.append(
+                        {"phase": "planner", "type": trace_type, "summary": trace_summary}
+                    )
+                    planner_text_trace.append(trace_summary)
+                for step in (plan.get("steps", []) or []):
+                    if not isinstance(step, dict):
+                        continue
+                    planner_text_trace.extend(self._summarize_step_trace(step))
             else:
                 res = await self.core.planner.ainvoke({"question": question})
                 plan = res["plan"]
@@ -248,6 +282,7 @@ class GraphAgent:
                 run_mode=str(state.get("run_mode") or "sync"),
                 resumed_from=state.get("resumed_from") or None,
             )
+            task.metadata["answer_requirements"] = list(plan.get("answer_requirements", []) or [])
             task.status = "running"
             task.touch()
             self._safe_save_task(task)
@@ -259,12 +294,12 @@ class GraphAgent:
                 "current_step_index": 0,
                 "step_results": [],
                 "tool_results_v2": [],
-                "execution_trace": [],
+                "execution_trace": planner_execution_trace,
                 "artifacts": [],
                 "cancel_requested": False,
                 "replanning_needed": False,
                 "feedback": "",
-                "trace": [trace_text],
+                "trace": [trace_text] + planner_text_trace,
             }
         except Exception as e:
             return {"error": str(e), "trace": [f"Planner Error: {e}"]}
@@ -362,6 +397,9 @@ class GraphAgent:
         chunks = []
         quality = {}
         quality_score = state.get("retrieval_quality_score", 0.0)
+        remediation_count = int(state.get("remediation_count", 0) or 0)
+        remediation_stats = self._normalize_remediation_stats(state.get("remediation_stats"))
+        unresolved_outcomes = list(state.get("unresolved_outcomes", []) or [])
         
         if tool == "RAG":
             self._stream_thought("> [执行] 正在检索知识库...\n")
@@ -389,6 +427,120 @@ class GraphAgent:
         self._safe_save_task(task)
 
         result_text = tool_result.content or ""
+        outcome = dict((tool_result.metadata or {}).get("outcome_assessment") or {})
+        issue_type = str(outcome.get("issue_type") or "none")
+        retryable = bool(outcome.get("retryable", False))
+        outcome_feedback = self._format_outcome_feedback(outcome)
+        remediation_stats = self._advance_remediation_stats(remediation_stats, tool, issue_type)
+        remediation_decision = build_remediation_decision(
+            updated_step,
+            tool_result,
+            outcome,
+            {
+                "remediation_count": remediation_count,
+                "remediation_stats": remediation_stats,
+                "execution_replan_count": state.get("execution_replan_count", 0),
+            },
+        )
+        decision_payload = remediation_decision.to_dict()
+        trace_item = dict(trace_item or {})
+        trace_item["remediation"] = decision_payload
+        if remediation_decision.trace_summary:
+            trace_item["trace_summary"] = remediation_decision.trace_summary
+        updated_step.metadata["remediation_decision"] = decision_payload
+        updated_step.metadata["stop_reason"] = remediation_decision.stop_reason
+        updated_step.metadata["retry_of"] = updated_step.retry_of
+        updated_step.metadata["remediation_attempt"] = int(
+            dict(remediation_stats.get("step_remediation_counts") or {}).get(updated_step.id, 0) or 0
+        )
+        task.steps[idx] = updated_step
+        self._safe_save_step(task.id, updated_step, idx)
+
+        action = dict(decision_payload.get("action") or {})
+        action_type = str(action.get("action_type") or "none")
+        action_allowed = bool(action.get("allowed", False))
+        suppress_default_replan = False
+        if remediation_decision.should_remediate:
+            if action_allowed and action_type in {"retry_same_tool", "switch_tool"}:
+                retry_tool = str(action.get("retry_tool") or tool).upper().strip() or tool
+                retry_task = str(action.get("retry_task") or instruction).strip() or instruction
+                step_counts = dict(remediation_stats.get("step_remediation_counts") or {})
+                step_counts[updated_step.id] = int(step_counts.get(updated_step.id, 0) or 0) + 1
+                remediation_stats["step_remediation_counts"] = step_counts
+                if tool == "LLM" and issue_type == "empty_result":
+                    remediation_stats["llm_empty_retry_count"] = int(remediation_stats.get("llm_empty_retry_count", 0) or 0) + 1
+                remediation_count += 1
+                retry_payload = {
+                    "tool": retry_tool,
+                    "task": retry_task,
+                    "retry_of": updated_step.id,
+                    "attempts": 0,
+                }
+                retry_step = self.executor.build_steps([retry_payload])[0]
+                retry_step.metadata.update(
+                    {
+                        "retry_of": updated_step.id,
+                        "remediation_attempt": step_counts[updated_step.id],
+                        "remediation_decision": decision_payload,
+                        "remediation_source_issue": issue_type,
+                    }
+                )
+                task.steps.insert(idx + 1, retry_step)
+                task.touch()
+                self._safe_save_task(task)
+                for pos in range(idx + 1, len(task.steps)):
+                    self._safe_save_step(task.id, task.steps[pos], pos)
+                self._stream_thought(f"> [补救] 已创建自动重试步骤：{retry_tool}\n")
+                return {
+                    "task": task.to_dict(),
+                    "steps": self._sync_legacy_steps(task),
+                    "step_results": [f"[{tool}] {instruction}：\n{self._truncate_step_result(result_text)}"],
+                    "current_step_index": idx + 1,
+                    "sources": new_sources,
+                    "retrieval_quality_score": quality_score if tool == "RAG" else state.get("retrieval_quality_score", 0.0),
+                    "retrieval_quality_detail": quality if tool == "RAG" else state.get("retrieval_quality_detail", {}),
+                    "retrieval_chunks": chunks if tool == "RAG" else [],
+                    "tool_results_v2": [tool_result.to_dict()],
+                    "execution_trace": [trace_item] if trace_item else [],
+                    "artifacts": normalized_artifacts,
+                    "trace": [remediation_decision.trace_summary or f"{tool} remediation retry scheduled"],
+                    "remediation_count": remediation_count,
+                    "remediation_stats": remediation_stats,
+                    "unresolved_outcomes": unresolved_outcomes,
+                }
+            if action_allowed and action_type == "replan":
+                step_counts = dict(remediation_stats.get("step_remediation_counts") or {})
+                step_counts[updated_step.id] = int(step_counts.get(updated_step.id, 0) or 0) + 1
+                remediation_stats["step_remediation_counts"] = step_counts
+                remediation_count += 1
+                self._stream_thought("> [补救] 触发受控重规划。\n")
+                return {
+                    "task": task.to_dict(),
+                    "execution_trace": [trace_item] if trace_item else [],
+                    "tool_results_v2": [tool_result.to_dict()],
+                    "artifacts": normalized_artifacts,
+                    "replanning_needed": True,
+                    "execution_replan_count": state.get("execution_replan_count", 0) + 1,
+                    "feedback": remediation_decision.trace_summary or f"步骤 {idx+1} [{tool}] 触发受控重规划。",
+                    "trace": ["controlled remediation replan"],
+                    "remediation_count": remediation_count,
+                    "remediation_stats": remediation_stats,
+                    "unresolved_outcomes": unresolved_outcomes,
+                }
+            if action_type in {"ask_user", "degrade_answer"}:
+                suppress_default_replan = True
+                unresolved_outcomes.append(
+                    {
+                        "tool_name": tool,
+                        "issue_type": issue_type,
+                        "summary": outcome.get("summary", ""),
+                        "suggested_action": action.get("trace_summary") or outcome.get("suggested_action", ""),
+                    }
+                )
+                result_text = outcome_feedback or remediation_decision.trace_summary or result_text
+                self._stream_thought(f"> [补救] {action.get('trace_summary') or remediation_decision.trace_summary}\n")
+        if retryable and issue_type != "none":
+            self._stream_thought(f"> [闭环] {tool} 可重试：{outcome_feedback}\n")
         if tool == "RAG":
             quality = dict((tool_result.metadata or {}).get("retrieval_quality", {}) or {})
             chunks = list((tool_result.metadata or {}).get("kb_chunks", []) or [])
@@ -396,7 +548,7 @@ class GraphAgent:
             for c in chunks:
                 if c.get("doc_name"):
                     new_sources.append(c["doc_name"])
-            if chunks:
+            if chunks and not suppress_default_replan:
                 self._stream_thought(f"> [结果] 找到 {len(chunks)} 条相关资料\n")
                 allow_low_quality_replan = (
                     GRAPH_REPLAN_ON_LOW_QUALITY
@@ -426,7 +578,7 @@ class GraphAgent:
                             ),
                             "trace": ["RAG low-quality, triggering replan"],
                         }
-            else:
+            elif not suppress_default_replan:
                 self._stream_thought("> [结果] 未找到资料，正在触发重新规划...\n")
                 return {
                     "task": task.to_dict(),
@@ -441,12 +593,21 @@ class GraphAgent:
                     "trace": ["RAG failed, triggering replan"],
                 }
         else:
-            if (
-                not tool_result.success
-                or not result_text
-                or result_text.strip().startswith("Error:")
-                or result_text.strip().startswith("[系统错误]")
-                or result_text.strip().startswith("[错误]")
+            if issue_type == "missing_file":
+                self._stream_thought("> [闭环] 文件上下文不足，保留提示并继续汇总回答。\n")
+                result_text = outcome_feedback or "缺少可用文件，请先上传文件并提供 file_id。"
+            elif issue_type == "invalid_input":
+                self._stream_thought("> [闭环] 计算输入不合法，保留提示并继续汇总回答。\n")
+                result_text = outcome_feedback or "输入表达式不明确，请补充可计算表达式。"
+            elif (
+                not suppress_default_replan
+                and (
+                    (not tool_result.success)
+                    or (not result_text)
+                    or result_text.strip().startswith("Error:")
+                    or result_text.strip().startswith("[系统错误]")
+                    or result_text.strip().startswith("[错误]")
+                )
             ):
                 self._stream_thought("> [结果] 执行失败或为空，正在触发重新规划...\n")
                 return {
@@ -496,7 +657,10 @@ class GraphAgent:
             "tool_results_v2": [tool_result.to_dict()],
             "execution_trace": [trace_item] if trace_item else [],
             "artifacts": normalized_artifacts,
-            "trace": [f"Executed {tool}"]
+            "trace": [f"Executed {tool}"],
+            "remediation_count": remediation_count,
+            "remediation_stats": remediation_stats,
+            "unresolved_outcomes": unresolved_outcomes,
         }
 
     async def _node_solver_async(self, state: AgentState) -> Dict[str, Any]:
@@ -562,8 +726,43 @@ class GraphAgent:
         final_answer = f"【系统可信度（证据）：{confidence_label}】\n{synthesized_answer}"
         if confidence_label == "低":
             final_answer += "\n\n【需补充信息】当前证据支撑较弱，建议补充更具体的问题条件、关键词或权威资料来源。"
+        unresolved = list(state.get("unresolved_outcomes", []) or [])
+        if unresolved:
+            lines = []
+            for item in unresolved[:3]:
+                tool_name = str(item.get("tool_name") or "工具")
+                issue = str(item.get("issue_type") or "unknown")
+                suggestion = str(item.get("suggested_action") or "").strip()
+                summary = str(item.get("summary") or "").strip()
+                line = f"- {tool_name}：{issue}"
+                if summary:
+                    line += f"，{summary}"
+                if suggestion:
+                    line += f"。建议：{suggestion}"
+                lines.append(line)
+            final_answer += "\n\n【执行补救记录】\n" + "\n".join(lines)
         
         task = self._task_from_state(state)
+        remediation_metrics = collect_remediation_metrics(
+            task=task,
+            state=state,
+            execution_trace=list(state.get("execution_trace", []) or []),
+            steps=task.steps,
+        )
+        evidence_assessment = assess_evidence_quality(
+            answer=synthesized_answer,
+            sources=list(state.get("sources", []) or []),
+            retrieval_chunks=list(state.get("retrieval_chunks", []) or []),
+            need_evidence=bool((state.get("plan") or {}).get("need_evidence", state.get("need_kb", False))),
+            confidence_label=confidence_label,
+        )
+        task.metadata["remediation_metrics"] = remediation_metrics
+        task.metadata["evidence_quality_assessment"] = evidence_assessment
+        if evidence_assessment.get("issue_type") not in {"none", ""}:
+            final_answer += (
+                "\n\n【证据校验摘要】"
+                f"{evidence_assessment.get('summary', '')}"
+            )
         task.final_answer = final_answer
         task.status = self._derive_task_status(task, final_answer)
         task.touch()
@@ -579,11 +778,42 @@ class GraphAgent:
             "task_id": task.id,
             "final_answer": final_answer,
             "answer_confidence_score": confidence_score,
-            "answer_confidence_label": confidence_label
+            "answer_confidence_label": confidence_label,
+            "remediation_metrics": remediation_metrics,
+            "evidence_quality_assessment": evidence_assessment,
+            "execution_trace": [
+                {
+                    "phase": "solver",
+                    "type": "evidence_check",
+                    "summary": (
+                        f"证据评估：{evidence_assessment.get('issue_type', 'none')}，"
+                        f"coverage={evidence_assessment.get('evidence_coverage', 0)}。"
+                    ),
+                }
+            ],
         }
 
     async def _node_reviewer_async(self, state: AgentState) -> Dict[str, Any]:
         count = state.get("review_count", 0)
+        evidence_assessment = dict(state.get("evidence_quality_assessment") or {})
+        evidence_issue = str(evidence_assessment.get("issue_type") or "none")
+        if evidence_issue not in {"none", ""} and bool(evidence_assessment.get("need_evidence", False)):
+            if count >= 2:
+                return {"is_satisfactory": True}
+            return {
+                "is_satisfactory": False,
+                "feedback": f"证据校验提示：{evidence_assessment.get('summary', '证据不足。')}",
+                "review_count": count + 1,
+            }
+        missing_requirements = self._check_answer_requirements(state)
+        if missing_requirements:
+            if count >= 2:
+                return {"is_satisfactory": True}
+            return {
+                "is_satisfactory": False,
+                "feedback": f"回答未满足要求：{'; '.join(missing_requirements)}",
+                "review_count": count + 1,
+            }
         brain = getattr(self.core, "brain", None)
         if brain is not None:
             self._stream_thought("\n> [思考] 正在审核回答质量...\n")
@@ -663,6 +893,73 @@ class GraphAgent:
         keep = max(1, GRAPH_STEP_RESULT_MAX_CHARS // 2)
         return text[:keep] + "\n...（步骤结果已压缩）...\n" + text[-keep:]
 
+    def _normalize_remediation_stats(self, raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        data = dict(raw or {})
+        return {
+            "tool_failure_streak": dict(data.get("tool_failure_streak") or {}),
+            "issue_counts": dict(data.get("issue_counts") or {}),
+            "step_remediation_counts": dict(data.get("step_remediation_counts") or {}),
+            "llm_empty_retry_count": int(data.get("llm_empty_retry_count", 0) or 0),
+        }
+
+    def _advance_remediation_stats(self, stats: Dict[str, Any], tool: str, issue_type: str) -> Dict[str, Any]:
+        next_stats = self._normalize_remediation_stats(stats)
+        tool_key = str(tool or "").upper().strip() or "UNKNOWN"
+        issue = str(issue_type or "unknown")
+        tool_streak = dict(next_stats.get("tool_failure_streak") or {})
+        if issue == "none":
+            tool_streak[tool_key] = 0
+        else:
+            tool_streak[tool_key] = int(tool_streak.get(tool_key, 0) or 0) + 1
+            issue_counts = dict(next_stats.get("issue_counts") or {})
+            issue_counts[issue] = int(issue_counts.get(issue, 0) or 0) + 1
+            next_stats["issue_counts"] = issue_counts
+        next_stats["tool_failure_streak"] = tool_streak
+        return next_stats
+
+    def _format_outcome_feedback(self, outcome: Dict[str, Any]) -> str:
+        summary = str(outcome.get("summary") or "").strip()
+        action = str(outcome.get("suggested_action") or "").strip()
+        if summary and action:
+            return f"{summary} 建议：{action}"
+        return summary or action
+
+    def _check_answer_requirements(self, state: AgentState) -> List[str]:
+        plan = dict(state.get("plan") or {})
+        requirements = [str(item).strip() for item in (plan.get("answer_requirements", []) or []) if str(item).strip()]
+        if not requirements:
+            return []
+        answer = str(state.get("final_answer") or "")
+        sources = list(state.get("sources", []) or [])
+        missing: List[str] = []
+        for req in requirements:
+            if "中文" in req:
+                has_chinese = any("\u4e00" <= ch <= "\u9fff" for ch in answer)
+                if not has_chinese:
+                    missing.append(req)
+            elif "引用资料来源" in req:
+                if not (("来源" in answer) or bool(sources)):
+                    missing.append(req)
+            elif "区分资料支持和模型推断" in req:
+                has_split = ("资料支持" in answer and "推断" in answer) or ("资料未明确提及" in answer and "推断" in answer)
+                if not has_split:
+                    missing.append(req)
+        return missing
+
+    def _summarize_step_trace(self, step: Dict[str, Any]) -> List[str]:
+        parts: List[str] = []
+        tool = str(step.get("tool", "")).strip()
+        reason = str(step.get("reason", "")).strip()
+        expected_output = str(step.get("expected_output", "")).strip()
+        fallback = str(step.get("fallback", "")).strip()
+        if reason:
+            parts.append(f"选择 {tool or '工具'}：{reason}")
+        if expected_output:
+            parts.append(f"预期输出：{expected_output}")
+        if fallback:
+            parts.append(f"回退策略：{fallback}")
+        return parts
+
     def _grade_answer_confidence(self, state: AgentState):
         need_kb = bool(state.get("need_kb", False))
         context_score = float(state.get("context_score", 0.0) or 0.0)
@@ -732,7 +1029,17 @@ class GraphAgent:
             "retrieval_chunks": [],
             "execution_replan_count": 0,
             "answer_confidence_score": 0.0,
-            "answer_confidence_label": ""
+            "answer_confidence_label": "",
+            "remediation_count": 0,
+            "remediation_stats": {
+                "tool_failure_streak": {},
+                "issue_counts": {},
+                "step_remediation_counts": {},
+                "llm_empty_retry_count": 0,
+            },
+            "unresolved_outcomes": [],
+            "remediation_metrics": {},
+            "evidence_quality_assessment": {},
         }
         
         final_state = await self.app_async.ainvoke(inputs)

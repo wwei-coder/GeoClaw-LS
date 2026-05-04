@@ -4,6 +4,7 @@ suppress_known_third_party_warnings()
 
 import chromadb
 import copy
+import gc
 import hashlib
 import jieba
 import json
@@ -675,6 +676,10 @@ class VectorStore:
 
     def close(self):
         try:
+            self._invalidate_cache()
+        except Exception:
+            pass
+        try:
             self.collection = None
         except Exception:
             pass
@@ -687,3 +692,9 @@ class VectorStore:
             self.bm25_ids = []
         except Exception:
             pass
+        try:
+            self.model = None
+            self.reranker = None
+        except Exception:
+            pass
+        gc.collect()

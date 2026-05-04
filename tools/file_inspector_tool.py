@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 from tools.base import BaseTool, ToolInput, ToolResult
-
 
 def _preview_csv(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
@@ -20,7 +17,6 @@ def _preview_csv(path: Path) -> Dict[str, Any]:
     body = rows[1:] if len(rows) > 1 else []
     return {"header": header, "rows": body}
 
-
 def _preview_json(path: Path) -> Dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, list):
@@ -32,12 +28,10 @@ def _preview_json(path: Path) -> Dict[str, Any]:
         return {"top_level": "dict", "keys": keys, "sample": sample}
     return {"top_level": type(data).__name__, "sample": str(data)[:300]}
 
-
 def _preview_txt(path: Path) -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
     return {"line_count": len(lines), "char_count": len(text), "preview_lines": lines[:12]}
-
 
 def _preview_excel(path: Path) -> Dict[str, Any]:
     try:
@@ -53,7 +47,6 @@ def _preview_excel(path: Path) -> Dict[str, Any]:
         if i >= 5:
             break
     return {"sheet": sheet.title, "preview_rows": rows}
-
 
 def run_file_inspector(query: str, agent) -> ToolResult:
     workspace = getattr(agent, "file_workspace", None)
@@ -118,7 +111,6 @@ def run_file_inspector(query: str, agent) -> ToolResult:
             artifacts=[],
             error=str(exc),
         )
-
 
 class FileInspectorTool(BaseTool):
     name = "FILE_INSPECTOR"

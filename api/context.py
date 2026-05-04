@@ -15,6 +15,7 @@ DEFAULT_WEB_PORT = 18765
 PORT_SCAN_LIMIT = 120
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 logger = logging.getLogger(__name__)
+RESET_PENDING_MESSAGE = "系统已标记重置，请重启服务后继续使用。"
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -67,13 +68,13 @@ HIDDEN_PREFIXES = (
 )
 
 PARAM_HINTS = {
-    "models.provider": ("作用：选择大模型提供方", "建议：本地用 ollama；云端接口用 openai_compatible"),
-    "models.api.base_url": ("作用：远程 API 基础地址", "建议：填写服务商提供的 v1 地址"),
-    "models.api.api_key": ("作用：远程 API 鉴权密钥", "建议：填写后妥善保管"),
-    "models.api.model": ("作用：远程 API 模型名", "建议：填写服务商可用模型"),
-    "models.api.timeout": ("作用：远程 API 非流式超时（秒）", "建议：30~180；网络不稳可调高"),
-    "models.api.stream_timeout": ("作用：远程 API 流式超时（秒）", "建议：60~300；长回答建议更高"),
-    "models.api.max_tokens": ("作用：远程 API 最大输出 token", "建议：0 表示由服务端默认控制"),
+    "models.provider": ("作用：选择大模型提供方（当前版本锁定为 ollama）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.base_url": ("作用：远程 API 基础地址（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.api_key": ("作用：远程 API 鉴权密钥（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.model": ("作用：远程 API 模型名（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.timeout": ("作用：远程 API 非流式超时（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.stream_timeout": ("作用：远程 API 流式超时（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
+    "models.api.max_tokens": ("作用：远程 API 最大输出 token（预留）", "说明：当前 core/config.py 强制 ollama-only，此项不会生效"),
     "models.ollama.model": ("作用：选择回复模型", "建议：优先 7B/14B 常用模型"),
     "models.ollama.url": ("作用：Ollama 服务地址", "建议：本机默认 http://localhost:11434/api/generate"),
     "models.ollama.temperature": ("作用：控制回答发散度", "建议：0.2~0.8"),
@@ -108,14 +109,23 @@ class SaveConfigRequest(BaseModel):
 class ObservabilityToggleRequest(BaseModel):
     enabled: bool
 
+class ResetPendingError(RuntimeError):
+    pass
+
 class RAGBridge:
     def __init__(self) -> None:
         self._agent: Optional[Any] = None
         self._lock = threading.RLock()
+        self._reset_pending = False
+
+    def _ensure_available(self) -> None:
+        if self._reset_pending:
+            raise ResetPendingError(RESET_PENDING_MESSAGE)
 
     def get_agent(self) -> Any:
         from core.reset_handler import consume_reset_flag_once
 
+        self._ensure_available()
         consume_reset_flag_once()
         if AGENT_CORE_CTOR is None:
             raise RuntimeError(
@@ -130,25 +140,39 @@ class RAGBridge:
 
     def with_agent(self, fn: Callable[[Any], Any]) -> Any:
         with self._lock:
+            self._ensure_available()
             return fn(self.get_agent())
 
     def with_agent_readonly(self, fn: Callable[[Any], Any]) -> Any:
         """执行只读调用：仅保证 agent 已初始化，不持有全局执行锁。"""
+        self._ensure_available()
         agent = self.get_agent()
         return fn(agent)
 
     def reset_agent(self) -> None:
+        self._close_agent_resources()
+
+    def enter_reset_pending(self) -> None:
+        with self._lock:
+            self._close_agent_resources()
+            self._reset_pending = True
+
+    def is_reset_pending(self) -> bool:
+        with self._lock:
+            return self._reset_pending
+
+    def _close_agent_resources(self) -> None:
         with self._lock:
             agent = self._agent
             if agent is not None:
                 try:
-                    if hasattr(agent, "vector_store") and hasattr(agent.vector_store, "close"):
-                        agent.vector_store.close()
-                except (AttributeError, OSError, RuntimeError):
+                    if hasattr(agent, "task_runner") and agent.task_runner is not None:
+                        agent.task_runner.shutdown(wait=False)
+                except (AttributeError, OSError, RuntimeError, TypeError):
                     pass
                 try:
-                    if hasattr(agent, "task_runner") and agent.task_runner is not None:
-                        agent.task_runner.shutdown()
+                    if hasattr(agent, "vector_store") and hasattr(agent.vector_store, "close"):
+                        agent.vector_store.close()
                 except (AttributeError, OSError, RuntimeError):
                     pass
                 try:

@@ -58,9 +58,12 @@ class BrainPromptCatalog:
         self._defs["planner"] = PromptDefinition(
             prompt_id="planner",
             version="v1",
-            description="任务规划提示词，输出严格 JSON 步骤计划。",
+            description="任务规划提示词，输出兼容旧格式的结构化 JSON 步骤计划。",
             required_inputs=["question"],
-            output_contract='严格 JSON：仅含 intent/need_kb/steps；steps 为 [{task, tool}]。',
+            output_contract=(
+                "严格 JSON：兼容 need_kb+steps 旧格式；推荐新增 intent/need_evidence/risk_level/"
+                "reasoning_trace/answer_requirements；reasoning_trace 仅允许简短摘要。"
+            ),
             template=planner_template,
             source=planner_source,
             fallback_id=planner_fallback_id,

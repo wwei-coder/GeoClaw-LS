@@ -17,7 +17,6 @@ _ALLOWED_UNARY_OPS = {
 }
 _NUM_NODE_TYPES = tuple(t for t in (getattr(ast, "Num", None),) if t)
 
-
 def _safe_eval_node(node):
     if isinstance(node, ast.Expression):
         return _safe_eval_node(node.body)
@@ -41,11 +40,9 @@ def _safe_eval_node(node):
         return op(left, right)
     raise ValueError("表达式包含不支持的语法")
 
-
 def _safe_eval_expression(expr: str):
     parsed = ast.parse(expr, mode="eval")
     return _safe_eval_node(parsed)
-
 
 class CalculatorTool(BaseTool):
     name = "CALCULATOR"

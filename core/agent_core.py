@@ -257,7 +257,7 @@ class AgentCore:
             "window": RETRIEVAL_METRICS_WINDOW
         }
 
-    # >>>>>> 会话管理 <<<<<<
+    # 会话管理
     def create_new_session(self, title: str = "新对话") -> int:
         self.session_id = self.db_manager.create_session(title)
         self.short_memory = []
@@ -290,7 +290,7 @@ class AgentCore:
             self.short_memory.append(f"助手：{a}")
         logger.info(f"[Session] Switched to session {session_id}, loaded {len(recent)} rounds of context")
 
-    # >>>>>> Tool 执行器 <<<<<<
+    # Tool 执行
     def execute_tool_step(self, step: dict) -> str:
         """
         Sync execution of a tool.
@@ -311,7 +311,6 @@ class AgentCore:
             logger.error(f"[ToolError] {tool_name} 执行失败: {e}")
             return f"[系统错误] 工具 {tool_name} 执行异常: {str(e)}"
 
-    # -------------------------
     async def _fix_terminology_async(self, answer: str, question: str = "") -> str:
         final_answer = answer
 
@@ -584,7 +583,7 @@ class AgentCore:
             self.active_file_id = None
             self.active_files = []
 
-    # --------------------------------------------------
+    # -----------
     def load_history_to_ui(self, limit: int = 10, session_id: Optional[int] = None) -> str:
         sid = session_id if session_id is not None else self.get_active_session_id()
         if sid is not None:
@@ -601,7 +600,7 @@ class AgentCore:
         except Exception as e:
             logger.warning(f"[Reset] 关闭向量库句柄失败: {e}")
 
-        # 标记为待重置
+        # 标记重置
         from core.reset_handler import mark_for_reset
         mark_for_reset()
 

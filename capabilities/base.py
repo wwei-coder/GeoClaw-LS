@@ -1,13 +1,9 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
-
 from tools.base import BaseTool
 
-
 ToolFactory = Callable[[], BaseTool]
-
 
 @dataclass
 class CapabilityToolSpec:
@@ -26,7 +22,6 @@ class CapabilityToolSpec:
             return self.tool_factory()
         return None
 
-
 @dataclass
 class CapabilityMetadata:
     name: str
@@ -44,4 +39,3 @@ class CapabilityMetadata:
                 continue
             resolved[str(key).upper()] = tool
         return resolved
-

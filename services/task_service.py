@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from typing import Any, Dict, Optional
-
 from agent.runtime import AgentRequestContext
 from api.context import compute_progress, serialize_artifact, serialize_step, serialize_task
-
 
 class TaskService:
     def list_tasks(self, agent: Any, *, session_id: Optional[int], limit: int) -> Dict[str, Any]:

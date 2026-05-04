@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any, Dict
-
 from api.context import serialize_artifact
-
 
 class FileService:
     def upload_data_file(self, agent: Any, *, filename: str, content: bytes) -> Dict[str, Any]:

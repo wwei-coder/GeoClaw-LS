@@ -3,7 +3,6 @@ from typing import Any
 from tools.base import BaseTool, ToolInput, ToolResult
 from utils.ollama_client import ask_ollama
 
-
 class LLMTool(BaseTool):
     name = "LLM"
 

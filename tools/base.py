@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import abc
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
 
 @dataclass
 class ToolInput:
@@ -12,7 +10,6 @@ class ToolInput:
     task: str
     tool: str = ""
     context: Dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass
 class ToolResult:
@@ -39,7 +36,6 @@ class ToolResult:
         if self.error:
             return f"[system_error] {self.error}"
         return "[system_error] tool execution failed"
-
 
 class BaseTool(abc.ABC):
     """Base protocol for next-phase concrete tool classes."""

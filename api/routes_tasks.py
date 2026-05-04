@@ -1,9 +1,8 @@
 from typing import Any, Optional
-
 from fastapi import APIRouter, HTTPException
-
 from api.context import (
     CreateTaskRequest,
+    ResetPendingError,
     RetryTaskRequest,
     bridge,
 )
@@ -12,14 +11,12 @@ from services.task_service import TaskService
 router = APIRouter()
 service = TaskService()
 
-
 @router.get("/api/tasks")
 def list_tasks(session_id: Optional[int] = None, limit: int = 50):
     def _inner(agent: Any):
         return service.list_tasks(agent, session_id=session_id, limit=limit)
 
     return bridge.with_agent_readonly(_inner)
-
 
 @router.get("/api/tasks/{task_id}")
 def get_task_detail(task_id: str):
@@ -30,8 +27,8 @@ def get_task_detail(task_id: str):
         return bridge.with_agent_readonly(_inner)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResetPendingError:
+        raise
 
 
 @router.post("/api/tasks")
@@ -55,11 +52,12 @@ def create_background_task(req: CreateTaskRequest):
         return bridge.with_agent(_inner)
     except HTTPException:
         raise
+    except ResetPendingError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建后台任务失败：{exc}") from exc
-
 
 @router.post("/api/tasks/{task_id}/cancel")
 def cancel_task(task_id: str):
@@ -74,11 +72,12 @@ def cancel_task(task_id: str):
         return bridge.with_agent(_inner)
     except HTTPException:
         raise
+    except ResetPendingError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"取消任务失败：{exc}") from exc
-
 
 @router.post("/api/tasks/{task_id}/retry")
 def retry_task(task_id: str, req: RetryTaskRequest):
@@ -93,11 +92,12 @@ def retry_task(task_id: str, req: RetryTaskRequest):
         return bridge.with_agent(_inner)
     except HTTPException:
         raise
+    except ResetPendingError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"重试任务失败：{exc}") from exc
-
 
 @router.post("/api/tasks/{task_id}/resume")
 def resume_task(task_id: str):
@@ -112,11 +112,12 @@ def resume_task(task_id: str):
         return bridge.with_agent(_inner)
     except HTTPException:
         raise
+    except ResetPendingError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"继续任务失败：{exc}") from exc
-
 
 @router.get("/api/tasks/{task_id}/artifacts")
 def get_task_artifacts(task_id: str, limit: int = 50):

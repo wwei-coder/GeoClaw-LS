@@ -21,7 +21,6 @@ def save_config(req: SaveConfigRequest):
 
     return bridge.with_agent(_inner)
 
-
 @router.post("/api/config/reset")
 def reset_config():
     try:

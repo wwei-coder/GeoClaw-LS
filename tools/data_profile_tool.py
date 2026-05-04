@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import csv
 import json
 import math
@@ -7,9 +6,7 @@ import statistics
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 from tools.base import BaseTool, ToolInput, ToolResult
-
 
 def _to_float(v: Any) -> Optional[float]:
     if v is None:
@@ -26,14 +23,12 @@ def _to_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
-
 def _read_csv(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         columns = reader.fieldnames or []
         rows = [dict(r) for r in reader]
     return list(columns), rows
-
 
 def _read_json(path: Path) -> Tuple[List[str], List[Dict[str, Any]], Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -50,7 +45,6 @@ def _read_json(path: Path) -> Tuple[List[str], List[Dict[str, Any]], Any]:
         return [], [], data
     return [], [], data
 
-
 def _read_txt(path: Path) -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
@@ -64,7 +58,6 @@ def _read_txt(path: Path) -> Dict[str, Any]:
         "preview_lines": lines[:12],
         "top_words": top_words,
     }
-
 
 def _read_xlsx(path: Path, sheet_name: Optional[str] = None) -> Tuple[List[str], List[Dict[str, Any]], str]:
     try:
@@ -85,7 +78,6 @@ def _read_xlsx(path: Path, sheet_name: Optional[str] = None) -> Tuple[List[str],
             row_map[col] = row[idx] if idx < len(row) else None
         data_rows.append(row_map)
     return headers, data_rows, target.title
-
 
 def _profile_table(columns: List[str], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = len(rows)
@@ -150,7 +142,6 @@ def _profile_table(columns: List[str], rows: List[Dict[str, Any]]) -> Dict[str, 
         "warnings": warnings,
     }
 
-
 def _profile_to_markdown(file_info: Dict[str, Any], profile: Dict[str, Any]) -> str:
     lines: List[str] = []
     lines.append(f"# 数据概览报告（{file_info.get('original_name', '')}）")
@@ -199,7 +190,6 @@ def _profile_to_markdown(file_info: Dict[str, Any], profile: Dict[str, Any]) -> 
     lines.append("- 是否需要按时间或区域进一步分组统计？")
     lines.append("- 是否需要导出清洗建议和字段映射？")
     return "\n".join(lines)
-
 
 def run_data_profile(query: str, agent) -> ToolResult:
     workspace = getattr(agent, "file_workspace", None)
@@ -280,7 +270,6 @@ def run_data_profile(query: str, agent) -> ToolResult:
             artifacts=artifacts,
             error=str(exc),
         )
-
 
 class DataProfileTool(BaseTool):
     name = "DATA_PROFILE"

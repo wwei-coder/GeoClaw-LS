@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from typing import Any, Dict
-
 import yaml
 
 from api.context import (
@@ -11,7 +9,7 @@ from api.context import (
     read_yaml,
     write_yaml,
 )
-
+from services.config_metadata import apply_editable_subset, build_metadata_payload
 
 class ConfigService:
     EFFECTIVE_PROVIDER = "ollama"
@@ -29,17 +27,29 @@ class ConfigService:
     def get_config(self) -> Dict[str, Any]:
         data = read_yaml(CONFIG_PATH)
         defaults = read_yaml(DEFAULT_CONFIG_PATH)
+        items = flatten_config(data)
+        metadata = build_metadata_payload(data, defaults, items)
         return {
             "data": data,
             "defaults": defaults,
-            "items": flatten_config(data),
+            "items": items,
+            "metadata": metadata,
+            "categories": metadata.get("categories", []),
+            "effects": metadata.get("effects", []),
+            "risks": metadata.get("risks", []),
+            "levels": metadata.get("levels", []),
+            "editable_items_enriched": metadata.get("editable_items_enriched", []),
             "effective": self._build_effective_runtime(),
         }
 
     def save_config(self, agent: Any, *, data: Dict[str, Any]) -> Dict[str, Any]:
-        write_yaml(CONFIG_PATH, data)
+        current = read_yaml(CONFIG_PATH)
+        current_items = flatten_config(current)
+        editable_paths = [str(item.get("path") or "") for item in current_items if item.get("path")]
+        merged = apply_editable_subset(current, data, editable_paths)
+        write_yaml(CONFIG_PATH, merged)
         try:
-            temp = data.get("models", {}).get("ollama", {}).get("temperature")
+            temp = merged.get("models", {}).get("ollama", {}).get("temperature")
             if temp is not None:
                 agent.temperature = float(temp)
         except (TypeError, ValueError):

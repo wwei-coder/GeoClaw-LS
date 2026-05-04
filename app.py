@@ -3,7 +3,8 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from api.context import (
     ChatRequest,
@@ -16,6 +17,7 @@ from api.context import (
     RetryTaskRequest,
     STATIC_DIR,
     SaveConfigRequest,
+    ResetPendingError,
     bridge,
     logger,
     read_observability_enabled_from_config,
@@ -67,6 +69,10 @@ app.include_router(config_router)
 app.include_router(kb_router)
 app.include_router(observability_router)
 app.include_router(health_router)
+
+@app.exception_handler(ResetPendingError)
+async def handle_reset_pending(_request: Request, exc: ResetPendingError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 def _is_port_available(bind_host: str, bind_port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

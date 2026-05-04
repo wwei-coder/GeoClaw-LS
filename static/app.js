@@ -5,7 +5,9 @@ const state = {
   settingsData: {},
   defaultsData: {},
   configEffective: {},
-  selectedPrefix: "",
+  configMetadata: {},
+  configCategories: [],
+  selectedCategory: "",
   selectedPath: "",
   settingsDirty: false,
   kbDocs: [],
@@ -25,7 +27,6 @@ let isAsking = false;
 let activeChatController = null;
 let activePendingBubble = null;
 let taskPollTimer = null;
-let expandedTreePrefixes = new Set([""]);
 const PATH_SEGMENT_LABELS = {
   common: "常用设置",
   llm: "语言模型",
@@ -421,19 +422,20 @@ function toReadableLabel(raw = "") {
   return cleaned.replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
 }
 
-function formatPathLabel(path = "") {
-  const parts = String(path || "").split(".");
-  const useful = parts[0] === "config" ? parts.slice(1) : parts;
-  if (!useful.length) return "RAG设置";
-  return useful.map((seg) => toReadableLabel(seg) || seg).join(" / ");
-}
-
 function getDisplayName(item) {
   if (!item) return "";
-  if (item.hint && item.hint.title) return item.hint.title;
+  if (item.metadata && item.metadata.label) return item.metadata.label;
+  if (item.hint && item.hint.title) return String(item.hint.title).replace(/^作用：/, "");
   const parts = item.path.split(".");
   const tail = parts[parts.length - 1] || "";
   return toReadableLabel(tail) || tail;
+}
+
+function getItemMeta(item) {
+  if (!item) return {};
+  if (item.metadata) return item.metadata;
+  const byPath = (state.configMetadata && state.configMetadata.by_path) || {};
+  return byPath[item.path] || {};
 }
 
 function stringifyValue(value) {
@@ -533,58 +535,6 @@ function renderKbDocsContent() {
   renderKbGraphPanel();
 }
 
-function splitConfigPath(path = "") {
-  const parts = String(path || "").split(".");
-  return parts[0] === "config" ? parts.slice(1) : parts;
-}
-
-function getPathPrefixAtDepth(path = "", depth = 0) {
-  const parts = splitConfigPath(path);
-  if (!parts.length || depth < 0 || depth >= parts.length) return "";
-  return parts.slice(0, depth + 1).join(".");
-}
-
-function getTreeChildrenMap(items = []) {
-  const map = new Map();
-  map.set("", new Set());
-  for (const item of items) {
-    const parts = splitConfigPath(item.path);
-    for (let i = 0; i < parts.length; i++) {
-      const parent = parts.slice(0, i).join(".");
-      const child = parts.slice(0, i + 1).join(".");
-      if (!map.has(parent)) map.set(parent, new Set());
-      map.get(parent).add(child);
-      if (!map.has(child)) map.set(child, new Set());
-    }
-  }
-  return map;
-}
-
-function getPrefixDepth(prefix = "") {
-  if (!prefix) return 0;
-  return splitConfigPath(prefix).length;
-}
-
-function getPrefixLabel(prefix = "") {
-  if (!prefix) return "RAG设置";
-  const parts = splitConfigPath(prefix);
-  const tail = parts[parts.length - 1] || "";
-  return toReadableLabel(tail) || tail;
-}
-
-function ensureTreeExpandedDefaults(treeChildrenMap) {
-  if (expandedTreePrefixes.size > 1) return;
-  expandedTreePrefixes = new Set([""]);
-  const topChildren = [...(treeChildrenMap.get("") || [])];
-  topChildren.forEach((prefix) => expandedTreePrefixes.add(prefix));
-}
-
-function expandSelectedAncestors(prefix = "") {
-  const parts = splitConfigPath(prefix);
-  for (let i = 0; i < parts.length - 1; i++) {
-    expandedTreePrefixes.add(parts.slice(0, i + 1).join("."));
-  }
-}
 
 function renderBubble(text, role = "assistant") {
   const chat = qs("chatArea");
@@ -1008,59 +958,34 @@ function valueToInput(item, value) {
 
 function renderTree() {
   const panel = qs("treePanel");
-  const treeChildrenMap = getTreeChildrenMap(state.settingsItems);
-  ensureTreeExpandedDefaults(treeChildrenMap);
-  expandSelectedAncestors(state.selectedPrefix);
-
-  const renderNode = (prefix) => {
-    const children = [...(treeChildrenMap.get(prefix) || [])];
-    children.sort((a, b) => getPrefixLabel(a).localeCompare(getPrefixLabel(b), "zh-CN"));
-    return children
-      .map((childPrefix) => {
-        const depth = getPrefixDepth(childPrefix);
-        const childChildren = [...(treeChildrenMap.get(childPrefix) || [])];
-        const hasChildren = childChildren.length > 0;
-        const expanded = expandedTreePrefixes.has(childPrefix);
-        const caret = hasChildren ? (expanded ? "▾" : "▸") : "•";
-        const row = `
-          <div
-            class="tree-item${childPrefix === state.selectedPrefix ? " active" : ""}"
-            data-prefix="${childPrefix}"
-            data-has-children="${hasChildren ? "1" : "0"}"
-            style="padding-left:${8 + depth * 14}px"
-          >
-            <span class="tree-caret">${caret}</span>
-            <span class="tree-label">${escapeHtml(getPrefixLabel(childPrefix))}</span>
-          </div>
-        `;
-        if (!hasChildren || !expanded) return row;
-        return `${row}${renderNode(childPrefix)}`;
-      })
-      .join("");
-  };
-
-  panel.innerHTML = `
-    <div class="tree-item${state.selectedPrefix === "" ? " active" : ""}" data-prefix="" data-has-children="1">
-      <span class="tree-caret">${expandedTreePrefixes.has("") ? "▾" : "▸"}</span>
-      <span class="tree-label">RAG设置</span>
-    </div>
-    ${expandedTreePrefixes.has("") ? renderNode("") : ""}
-  `;
+  const categories = state.configCategories || [];
+  panel.innerHTML = [
+    `<div class="tree-item${state.selectedCategory === "" ? " active" : ""}" data-category="">全部设置</div>`,
+    ...categories.map(
+      (c) =>
+        `<div class="tree-item${state.selectedCategory === c.id ? " active" : ""}" data-category="${escapeAttr(
+          c.id
+        )}">${escapeHtml(c.label || c.id)}</div>`
+    ),
+  ].join("");
 }
 
 function filteredSettingItems() {
   const kw = qs("settingSearch").value.trim().toLowerCase();
   return state.settingsItems.filter((item) => {
-    if (state.selectedPrefix && !item.path.startsWith(state.selectedPrefix)) return false;
+    const meta = getItemMeta(item);
+    if (state.selectedCategory && meta.category !== state.selectedCategory) return false;
     if (!kw) return true;
     const value = getNested(state.settingsData, item.path);
     const displayName = getDisplayName(item);
+    const desc = String(meta.description || "");
     const hintTitle = item.hint && item.hint.title ? item.hint.title : "";
     const hintRecommend = item.hint && item.hint.recommend ? item.hint.recommend : "";
     return (
       item.path.toLowerCase().includes(kw) ||
       stringifyValue(value).toLowerCase().includes(kw) ||
       displayName.toLowerCase().includes(kw) ||
+      desc.toLowerCase().includes(kw) ||
       hintTitle.toLowerCase().includes(kw) ||
       hintRecommend.toLowerCase().includes(kw)
     );
@@ -1077,10 +1002,22 @@ function renderSettingsForm() {
   panel.innerHTML = items
     .map((item) => {
       const value = getNested(state.settingsData, item.path);
+      const defaultValue = getNested(state.defaultsData, item.path);
       const displayName = getDisplayName(item);
+      const meta = getItemMeta(item);
       return `
         <div class="setting-row" data-row-path="${item.path}">
           <div class="setting-label">${escapeHtml(displayName)}</div>
+          <div class="setting-path">配置路径：${escapeHtml(item.path)}</div>
+          <div class="setting-meta">
+            <span class="meta-pill">${escapeHtml(meta.category_label || "未分类")}</span>
+            <span class="meta-pill">${escapeHtml(meta.level_label || "未分级")}</span>
+            <span class="meta-pill effect-${escapeHtml(meta.effect || "agent_restart")}">${escapeHtml(meta.effect_label || "需重启")}</span>
+            <span class="meta-pill risk-${escapeHtml(meta.risk || "medium")}">风险：${escapeHtml(meta.risk_label || "中")}</span>
+          </div>
+          <div class="setting-help">当前值：${escapeHtml(stringifyValue(value))} ｜ 默认值：${escapeHtml(stringifyValue(defaultValue))}</div>
+          ${meta.description ? `<div class="setting-help">${escapeHtml(meta.description)}</div>` : ""}
+          ${meta.hints && meta.hints.recommend ? `<div class="setting-help">${escapeHtml(meta.hints.recommend)}</div>` : ""}
           ${valueToInput(item, value)}
         </div>
       `;
@@ -1099,16 +1036,32 @@ function renderHint(path) {
   const defaultValue = getNested(state.defaultsData, item.path);
   const typeLabel = TYPE_LABELS[item.type] || item.type;
   const displayName = getDisplayName(item);
+  const meta = getItemMeta(item);
   const lines = [
     `参数名称：${displayName}`,
     `配置路径：${item.path}`,
     `数据类型：${typeLabel}`,
+    `分类：${meta.category_label || "未分类"}`,
+    `层级：${meta.level_label || "未分级"}`,
+    `生效方式：${meta.effect_label || "未知"}`,
+    `风险等级：${meta.risk_label || "未知"}`,
     `当前值：${stringifyValue(value)}`,
     `默认值：${stringifyValue(defaultValue)}`,
   ];
-  if (item.hint) {
-    lines.push(`作用说明：${item.hint.title}`);
-    lines.push(`调整建议：${item.hint.recommend}`);
+  if (meta.disabled_reason) {
+    lines.push(`受限说明：${meta.disabled_reason}`);
+  }
+  const hints = meta.hints || item.hint || {};
+  if (hints.title) {
+    lines.push(`参数定位：${hints.title}`);
+  }
+  if (hints.recommend) {
+    lines.push(`调参建议：${hints.recommend}`);
+  }
+  if (Array.isArray(hints.notes)) {
+    hints.notes.filter(Boolean).forEach((note) => {
+      lines.push(`注意事项：${note}`);
+    });
   }
   el.innerHTML = `<pre>${escapeHtml(lines.join("\n"))}</pre>`;
 }
@@ -1144,11 +1097,13 @@ function renderConfigRuntimeNotice() {
 
 async function loadSettings() {
   const data = await api("/api/config");
-  state.settingsItems = data.items || [];
+  state.settingsItems = data.editable_items_enriched || data.items || [];
   state.settingsData = data.data || {};
   state.defaultsData = data.defaults || {};
+  state.configMetadata = data.metadata || {};
+  state.configCategories = data.categories || (data.metadata && data.metadata.categories) || [];
   state.configEffective = data.effective || {};
-  state.selectedPrefix = "";
+  state.selectedCategory = "";
   renderConfigRuntimeNotice();
   renderTree();
   renderSettingsForm();
@@ -1432,10 +1387,8 @@ function bindEvents() {
     try {
       setStatus("系统重置中...");
       await api("/api/system/reset", { method: "POST" });
-      await reloadSessions();
       qs("chatArea").innerHTML = "";
-      renderBubble("系统已重置，请继续提问。", "system");
-      await refreshKbConsole();
+      renderBubble("系统已触发重置，服务与页面即将关闭。", "system");
       await uiAlert("系统已重置，程序与页面即将关闭。", "重置完成");
       try {
         await api("/api/system/shutdown", { method: "POST" });
@@ -1444,6 +1397,17 @@ function bindEvents() {
       }
       closeUiAfterReset();
     } catch (err) {
+      const msg = String(err && err.message ? err.message : "");
+      if (msg.includes("系统已标记重置")) {
+        await uiAlert("系统已进入重置状态，服务与页面即将关闭。", "重置处理中");
+        try {
+          await api("/api/system/shutdown", { method: "POST" });
+        } catch (_err) {
+          // 服务可能已在关闭流程中，忽略即可。
+        }
+        closeUiAfterReset();
+        return;
+      }
       await uiAlert(`系统重置失败: ${err.message}`, "执行失败");
     } finally {
       setStatus("就绪");
@@ -1468,13 +1432,7 @@ function bindEvents() {
   qs("treePanel").addEventListener("click", (e) => {
     const item = e.target.closest(".tree-item");
     if (!item) return;
-    const prefix = item.dataset.prefix || "";
-    const hasChildren = item.dataset.hasChildren === "1";
-    state.selectedPrefix = prefix;
-    if (hasChildren) {
-      if (expandedTreePrefixes.has(prefix)) expandedTreePrefixes.delete(prefix);
-      else expandedTreePrefixes.add(prefix);
-    }
+    state.selectedCategory = item.dataset.category || "";
     renderTree();
     renderSettingsForm();
   });

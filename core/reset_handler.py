@@ -28,6 +28,9 @@ def mark_for_reset():
         f.write("reset_pending")
     logger.warning("⚠️  已标记为待重置。请重启程序以生效。")
 
+def is_reset_pending() -> bool:
+    return os.path.exists(RESET_FLAG_FILE)
+
 def perform_reset_if_needed():
     """Check for reset flag and delete vector_db if found."""
     if os.path.exists(RESET_FLAG_FILE):

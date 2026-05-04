@@ -1,15 +1,10 @@
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
-
 from loguru import logger
-
 from capabilities.rag.indexing.chunker import build_knowledge_chunks
 from capabilities.rag.indexing.fingerprint import diff_fingerprint, generate_fingerprint, load_fingerprint, save_fingerprint
 from capabilities.rag.indexing.loader import load_documents_from_dir
-
 from .schemas import KnowledgeBaseStatus, KnowledgeSyncSummary, RetrievalRequest, RetrievalResult
-
 
 class RagService:
     """RAG capability boundary (thin wrapper around existing implementations)."""

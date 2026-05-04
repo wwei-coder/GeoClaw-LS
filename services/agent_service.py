@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 import asyncio
 from typing import Any, Dict, List, Optional
-
 from agent.runtime import AgentRequestContext
 from api.context import parse_history_text
-
 
 class AgentService:
     def bootstrap(self, agent: Any) -> Dict[str, Any]:

@@ -206,10 +206,10 @@ class TaskRunner:
             request_context=req_ctx,
         )
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: bool = False) -> None:
         with self._lock:
             for item in self.running_tasks.values():
                 evt = item.get("cancel_event")
                 if evt is not None:
                     evt.set()
-        self.executor.shutdown(wait=False, cancel_futures=False)
+        self.executor.shutdown(wait=bool(wait), cancel_futures=False)

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from api.context import AGENT_CORE_CTOR, APP_ROOT, CONFIG_PATH, DEFAULT_CONFIG_PATH, RAG_IMPORT_ERROR
+from core.reset_handler import is_reset_pending
 from utils.logger import logger
 
 router = APIRouter()
@@ -14,6 +15,7 @@ def health():
         "config_exists": CONFIG_PATH.exists(),
         "agent_import_ok": AGENT_CORE_CTOR is not None,
         "agent_import_error": RAG_IMPORT_ERROR,
+        "reset_pending": is_reset_pending(),
     }
     logger.info(
         "[Health] /api/health accessed | app_root={} | config_exists={} | agent_import_ok={}",

@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 from typing import Any, Dict
-
 from api.context import parse_history_text
-
 
 class SessionService:
     def list_sessions(self, agent: Any) -> Dict[str, Any]:

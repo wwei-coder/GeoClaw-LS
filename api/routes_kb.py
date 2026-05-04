@@ -4,9 +4,7 @@ import time
 import threading
 from pathlib import Path
 from typing import Any
-
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
-
 from api.context import APP_ROOT, MAX_UPLOAD_BYTES, bridge
 from services.knowledge_base_service import KnowledgeBaseService
 
@@ -15,12 +13,10 @@ service = KnowledgeBaseService()
 KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 KB_DATA_DIR = APP_ROOT / "data"
 
-
 def _safe_name(file_name: str) -> str:
     name = Path(file_name or "").name.strip()
     name = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", name)
     return name or "knowledge.txt"
-
 
 def _reserve_unique_path(base_dir: Path, file_name: str) -> Path:
     candidate = (base_dir / file_name).resolve()
@@ -73,12 +69,13 @@ def kb_rebuild():
     return bridge.with_agent(_inner)
 
 @router.post("/api/system/reset")
-def system_reset():
+def system_reset(background_tasks: BackgroundTasks):
     def _inner(agent: Any):
         return service.system_reset(agent)
 
     result = bridge.with_agent(_inner)
-    bridge.reset_agent()
+    bridge.enter_reset_pending()
+    background_tasks.add_task(_shutdown_process)
     return result
 
 

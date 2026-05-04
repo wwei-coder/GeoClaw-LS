@@ -7,7 +7,7 @@ from core.question_classifier import is_memory_query, is_small_talk
 from utils.ollama_client import ask_ollama_async
 from utils.logger import logger
 from .prompt_catalog import BrainPromptCatalog
-from .schemas import BrainAnswer, BrainDecision, BrainPlan, BrainReview
+from .schemas import BrainAnswer, BrainDecision, BrainPlan, BrainPlanStep, BrainReview
 
 class LLMBrain:
     """Thin brain facade that wraps existing chain-based logic."""
@@ -48,8 +48,19 @@ class LLMBrain:
     async def plan(self, question: str) -> BrainPlan:
         res = await self.planner_chain.ainvoke({"question": question})
         raw_plan = dict(res.get("plan", {}) or {})
+        step_objs = [BrainPlanStep.from_dict(item) for item in (raw_plan.get("steps", []) or [])]
+        normalized_steps = [s.to_dict() for s in step_objs]
         return BrainPlan(
-            steps=list(raw_plan.get("steps", []) or []),
+            intent=str(raw_plan.get("intent") or "mixed"),
+            need_evidence=bool(raw_plan.get("need_evidence", False)),
+            risk_level=str(raw_plan.get("risk_level") or "low"),
+            answer_requirements=[
+                str(item).strip()
+                for item in (raw_plan.get("answer_requirements", []) or [])
+                if str(item).strip()
+            ],
+            reasoning_trace=list(raw_plan.get("reasoning_trace", []) or []),
+            steps=normalized_steps,
             raw_plan=raw_plan,
             source="PlannerChain",
             trace=str(res.get("trace", "")),
