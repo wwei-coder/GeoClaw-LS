@@ -1,10 +1,8 @@
 import json
-
-from core.config import SMALL_TALK_KEYWORDS
+from config_runtime import SMALL_TALK_KEYWORDS
 from utils.ollama_client import ask_ollama
 
 SMALL_TALK = SMALL_TALK_KEYWORDS
-
 
 def extract_user_preferences(dialog_text: str) -> dict:
     """
@@ -43,7 +41,6 @@ def extract_user_preferences(dialog_text: str) -> dict:
     except Exception:
         pass
     return {}
-
 
 def summarize_dialog(dialog_text: str) -> tuple[str, dict]:
     """

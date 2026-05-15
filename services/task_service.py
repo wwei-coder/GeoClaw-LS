@@ -1,7 +1,14 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from agent.runtime import AgentRequestContext
-from api.context import compute_progress, serialize_artifact, serialize_step, serialize_task
+from services.serializers import (
+    build_task_audit,
+    compute_progress,
+    compute_task_actionability,
+    serialize_artifact,
+    serialize_step,
+    serialize_task,
+)
 
 class TaskService:
     def list_tasks(self, agent: Any, *, session_id: Optional[int], limit: int) -> Dict[str, Any]:
@@ -21,6 +28,11 @@ class TaskService:
             payload["is_running"] = bool(runtime.get("is_running", False))
             payload["cancel_requested"] = bool(payload.get("cancel_requested") or runtime.get("cancel_requested", False))
             payload["progress"] = compute_progress(payload, steps)
+            payload["actionability"] = compute_task_actionability(
+                payload,
+                is_running=payload["is_running"],
+                cancel_requested=payload["cancel_requested"],
+            )
             rows.append(payload)
         return {"tasks": rows}
 
@@ -34,10 +46,16 @@ class TaskService:
         task = serialize_task(data.get("task"))
         steps = [serialize_step(s) for s in (data.get("steps") or [])]
         artifacts = [serialize_artifact(a) for a in (data.get("artifacts") or [])]
+        audit = build_task_audit(task, steps, artifacts)
         runner = getattr(agent, "task_runner", None)
         runtime = runner.list_running_status().get(task_id, {}) if runner else {}
         is_running = bool(runtime.get("is_running", False))
         cancel_requested = bool(task.get("cancel_requested") or runtime.get("cancel_requested", False))
+        actionability = compute_task_actionability(
+            task,
+            is_running=is_running,
+            cancel_requested=cancel_requested,
+        )
         return {
             "task": task,
             "steps": steps,
@@ -45,6 +63,12 @@ class TaskService:
             "is_running": is_running,
             "cancel_requested": cancel_requested,
             "progress": compute_progress(task, steps),
+            "actionability": actionability,
+            "audit": audit,
+            "execution_trace": list(audit.get("execution_events") or []),
+            "remediation_metrics": dict(audit.get("remediation_metrics") or {}),
+            "evidence_quality_assessment": dict(audit.get("evidence_quality_assessment") or {}),
+            "unresolved_outcomes": list(audit.get("unresolved_outcomes") or []),
         }
 
     def create_background_task(

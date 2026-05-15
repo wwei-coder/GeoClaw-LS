@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import jieba
 from loguru import logger
 
-from core.config import KEYWORD_RERANK_STOP_WORDS
+from config_runtime import KEYWORD_RERANK_STOP_WORDS
 from utils.warning_filters import suppress_known_third_party_warnings
 
 suppress_known_third_party_warnings()

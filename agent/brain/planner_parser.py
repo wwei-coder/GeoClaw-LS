@@ -1,7 +1,6 @@
-from utils.ollama_client import ask_ollama, ask_ollama_async
+from __future__ import annotations
 import json
 import re
-from agent.brain.prompt_catalog import get_prompt_catalog
 from tools.registry import get_enabled_tool_names
 from utils.logger import logger
 
@@ -38,18 +37,13 @@ def _has_file_signal(text: str) -> bool:
         return True
     return bool(re.search(r"\bfile[_-]?id\b", q, flags=re.IGNORECASE))
 
-def _process_planner_response(raw_response: str, question: str) -> dict:
-    """Helper to process and sanitize LLM response for planning.
+def get_planner_allowed_tools() -> set[str]:
+    return {str(name).upper() for name in get_enabled_tool_names()}
 
-    容错策略：
-    - 清理 Markdown 代码块与不可见字符；
-    - 解析失败时尝试截取最外层 JSON；
-    - 非法工具自动回退 LLM；
-    - 文件工具在无 file 信号时自动回退 LLM。
-    """
+def process_planner_response(raw_response: str, question: str) -> dict:
+    """Process and sanitize LLM response for planning."""
     raw = raw_response.strip()
-    
-    # Clean up markdown code block syntax more robustly
+
     if "```json" in raw:
         raw = raw.split("```json")[-1]
     if "```" in raw:
@@ -58,7 +52,7 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
     text = raw.strip()
     sanitized = "".join(ch for ch in text if (ord(ch) >= 32) or ch in "\n\r\t")
     sanitized = sanitized.replace("\u2028", "").replace("\u2029", "").strip()
-    
+
     plan = {}
     try:
         plan = json.loads(sanitized)
@@ -71,9 +65,8 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
                 plan = json.loads(sanitized[start:end + 1])
             except Exception as e:
                 logger.warning(f"[Planner] 二次 JSON 解析失败: {e}")
-        
+
     if not plan:
-        # Fallback if JSON parsing fails completely
         return {
             "intent": "mixed",
             "need_kb": False,
@@ -132,8 +125,7 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
             continue
         tool = str(s.get("tool", "LLM")).upper().strip()
         task = str(s.get("task", "")).strip()
-        
-        # 1. 自动修正工具名称（模糊匹配）
+
         if "CALC" in tool or "MATH" in tool:
             tool = "CALCULATOR"
         elif "MEM" in tool or "HIST" in tool:
@@ -142,10 +134,10 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
             tool = "RAG"
         elif "DISC" in tool or "ANALY" in tool:
             tool = "DISCOVERY"
-            
+
         if not task or "要做什么" in task or "给工具的输入" in task:
             task = question
-            
+
         original_tool = tool
         if tool in HARD_BLOCKED_TOOLS:
             tool = "RAG" if need_kb else "LLM"
@@ -196,17 +188,3 @@ def _process_planner_response(raw_response: str, question: str) -> dict:
         "steps": cleaned,
         "answer_requirements": answer_requirements,
     }
-
-def get_planner_allowed_tools() -> set[str]:
-    return {str(name).upper() for name in get_enabled_tool_names()}
-
-async def plan_task_async(question: str):
-    """Async version of plan_task"""
-    prompt = get_prompt_catalog().render("planner", question=question)
-    raw = await ask_ollama_async(prompt)
-    return _process_planner_response(raw, question)
-
-def plan_task(question: str):
-    prompt = get_prompt_catalog().render("planner", question=question)
-    raw = ask_ollama(prompt)
-    return _process_planner_response(raw, question)

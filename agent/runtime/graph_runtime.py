@@ -1,8 +1,5 @@
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
-
-
 class GraphRuntime:
     """Thin runtime facade; delegates to existing GraphAgent."""
 
@@ -27,4 +24,3 @@ class GraphRuntime:
             run_mode=run_mode,
             resumed_from=resumed_from,
         )
-

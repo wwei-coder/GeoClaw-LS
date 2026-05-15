@@ -1,27 +1,25 @@
 from __future__ import annotations
 from typing import Any, Dict
 import yaml
-
-from api.context import (
+from services.config_io import (
     CONFIG_PATH,
     DEFAULT_CONFIG_PATH,
-    flatten_config,
     read_yaml,
     write_yaml,
+)
+from services.config_support import (
+    flatten_config,
 )
 from services.config_metadata import apply_editable_subset, build_metadata_payload
 
 class ConfigService:
     EFFECTIVE_PROVIDER = "ollama"
-    PROVIDER_LOCK_REASON = "当前版本强制本地 Ollama-only，models.api.* 不会生效"
-    IGNORED_PATHS = ["models.provider", "models.api.*"]
 
     def _build_effective_runtime(self) -> Dict[str, Any]:
         return {
             "effective_provider": self.EFFECTIVE_PROVIDER,
-            "provider_locked": True,
-            "provider_lock_reason": self.PROVIDER_LOCK_REASON,
-            "ignored_paths": list(self.IGNORED_PATHS),
+            "local_only": True,
+            "runtime_note": "当前版本仅使用本地 Ollama。",
         }
 
     def get_config(self) -> Dict[str, Any]:
@@ -57,7 +55,7 @@ class ConfigService:
         return {
             "ok": True,
             "effective": self._build_effective_runtime(),
-            "warning": self.PROVIDER_LOCK_REASON,
+            "warning": "参数已保存；当前版本仅使用本地 Ollama。",
         }
 
     def reset_config(self) -> Dict[str, Any]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from tools.base import BaseTool, ToolInput, ToolResult
 
 def _preview_csv(path: Path) -> Dict[str, Any]:

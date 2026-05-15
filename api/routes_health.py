@@ -1,5 +1,6 @@
 from fastapi import APIRouter
-from api.context import AGENT_CORE_CTOR, APP_ROOT, CONFIG_PATH, DEFAULT_CONFIG_PATH, RAG_IMPORT_ERROR
+from api.context import AGENT_CORE_CTOR, APP_ROOT, RAG_IMPORT_ERROR
+from services.config_io import CONFIG_PATH, DEFAULT_CONFIG_PATH
 from core.reset_handler import is_reset_pending
 from utils.logger import logger
 

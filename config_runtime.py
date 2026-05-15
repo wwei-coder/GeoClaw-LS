@@ -1,8 +1,9 @@
 import os
 import yaml
 from utils.logger import logger
+
 # Base Directories
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 # Database Paths
@@ -17,7 +18,7 @@ PLANNER_PATH = os.path.join(BASE_DIR, "config", "planner.yaml")
 def load_yaml(path):
     if os.path.exists(path):
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
         except Exception as e:
             logger.warning(f"[Config] Failed to load {path}: {e}")
@@ -30,8 +31,7 @@ _planner_config = load_yaml(PLANNER_PATH)
 
 # Helper to safely get nested config
 def get_config(path, default=None):
-
-    keys = path.split('.')
+    keys = path.split(".")
     value = _config
     for key in keys:
         if isinstance(value, dict):
@@ -64,7 +64,7 @@ os.environ["HF_ENDPOINT"] = get_config("system.hf_endpoint", "https://hf-mirror.
 _embedding_model_name = get_config("models.embedding", "BAAI/bge-small-zh-v1.5")
 EMBEDDING_BACKEND = str(get_config("models.embedding_backend", "sentence_transformers")).strip().lower()
 # Extract folder name from repo ID (e.g., "bge-small-zh-v1.5" from "BAAI/bge-small-zh-v1.5")
-_local_embedding_folder = _embedding_model_name.split('/')[-1]
+_local_embedding_folder = _embedding_model_name.split("/")[-1]
 _local_embedding_path = os.path.join(MODELS_DIR, _local_embedding_folder)
 
 # Maintain backward compatibility variable EMBEDDING_MODEL_BGE pointing to local path
@@ -79,7 +79,6 @@ EMBEDDING_OLLAMA_TIMEOUT = int(get_config("models.embedding_ollama_timeout", 60)
 EMBEDDING_OLLAMA_BATCH_SIZE = int(get_config("models.embedding_ollama_batch_size", 16))
 
 # LLM Provider Configuration
-# Force local-only mode: always use Ollama and ignore remote provider overrides.
 LLM_PROVIDER = "ollama"
 
 # Ollama Configuration
@@ -88,14 +87,6 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", get_config("models.ollama.model", "deep
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", get_config("models.ollama.temperature", 0.7)))
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", get_config("models.ollama.timeout", 60)))
 OLLAMA_STREAM_TIMEOUT = int(os.getenv("OLLAMA_STREAM_TIMEOUT", get_config("models.ollama.stream_timeout", 120)))
-
-# OpenAI-compatible API Configuration (disabled in local-only mode)
-LLM_API_BASE_URL = ""
-LLM_API_KEY = ""
-LLM_API_MODEL = OLLAMA_MODEL
-LLM_API_TIMEOUT = OLLAMA_TIMEOUT
-LLM_API_STREAM_TIMEOUT = OLLAMA_STREAM_TIMEOUT
-LLM_API_MAX_TOKENS = 0
 
 # Vector Store Configuration
 VECTOR_COLLECTION_NAME = get_config("rag.vector_collection_name", "knowledge_base")
@@ -161,7 +152,12 @@ KB_WATCHER_POLL_INTERVAL_SECONDS = float(get_config("kb_watcher.poll_interval_se
 KB_WATCHER_SETTLE_SECONDS = float(get_config("kb_watcher.settle_seconds", 2.0))
 KB_WATCHER_NOTIFY_NO_CHANGE = to_bool(get_config("kb_watcher.notify_no_change", False), False)
 
-KEYWORD_RERANK_STOP_WORDS = set(get_config("keyword_rerank.stop_words", {"的", "了", "和", "是", "就", "都", "而", "及", "与", "在", "这", "那", "有", "个", "之", "吗", "呢", "啊"}))
+KEYWORD_RERANK_STOP_WORDS = set(
+    get_config(
+        "keyword_rerank.stop_words",
+        {"的", "了", "和", "是", "就", "都", "而", "及", "与", "在", "这", "那", "有", "个", "之", "吗", "呢", "啊"},
+    )
+)
 
 CHUNK_DYNAMIC_BASE_RATIO = float(get_config("chunking.dynamic.base_ratio", 0.12))
 CHUNK_DYNAMIC_MAX_RATIO = float(get_config("chunking.dynamic.max_ratio", 0.28))
@@ -187,11 +183,32 @@ COMPLEX_KEYWORDS = get_config("keywords.complex", ["滑坡", "地质", "灾害",
 # Sets
 SMALL_TALK_KEYWORDS = set(get_config("keywords.small_talk", {"在吗", "你是谁", "你好", "hi", "hello", "unknown", "未知"}))
 SMALL_TALK_PUNCTUATION = set(get_config("keywords.small_talk_punctuation", {"?", "？", "!", "！", ".", "。", "...", "…"}))
-MEMORY_QUERY_KEYWORDS = set(get_config("keywords.memory_query", {
-    "我刚才", "刚才问", "上一个问题", "前面问", "你刚才", "你刚刚",
-    "复述", "回顾", "我们聊了什么", "总结一下我们的对话", "总结我们刚才",
-    "上次", "上一轮", "之前问", "之前说", "问了什么", "说了什么", "问了啥", "说了啥"
-}))
+MEMORY_QUERY_KEYWORDS = set(
+    get_config(
+        "keywords.memory_query",
+        {
+            "我刚才",
+            "刚才问",
+            "上一个问题",
+            "前面问",
+            "你刚才",
+            "你刚刚",
+            "复述",
+            "回顾",
+            "我们聊了什么",
+            "总结一下我们的对话",
+            "总结我们刚才",
+            "上次",
+            "上一轮",
+            "之前问",
+            "之前说",
+            "问了什么",
+            "说了什么",
+            "问了啥",
+            "说了啥",
+        },
+    )
+)
 
 MATH_KEYWORDS = get_config("keywords.math", ["计算", "多少", "+", "-", "*", "/", "加", "减", "乘", "除", "等于", "几"])
 ANALYSIS_KEYWORDS = get_config("keywords.analysis", ["分析", "预测", "模型", "数据", "csv", "xlsx", "随机森林", "深度学习", "机器学习", "导入"])
@@ -204,7 +221,7 @@ if not _replacements_raw:
     TERMINOLOGY_REPLACEMENTS = [
         ("地成学（InSAR）", "干涉合成孔径雷达（InSAR）"),
         ("InSAR（地物成像技术）", "干涉合成孔径雷达（InSAR）"),
-        ("InSAR（热红外成像）", "干涉合成孔径雷达（InSAR）")
+        ("InSAR（热红外成像）", "干涉合成孔径雷达（InSAR）"),
     ]
 else:
     # Convert list of lists to list of tuples for compatibility
@@ -230,7 +247,10 @@ if not _planner_task_prompt:
     # Fallback to prompts.yaml if not in planner.yaml
     _planner_task_prompt = PROMPTS.get("planner_task")
 
-PLANNER_PROMPT = _planner_task_prompt if _planner_task_prompt else """
+PLANNER_PROMPT = (
+    _planner_task_prompt
+    if _planner_task_prompt
+    else """
 你是一个 Tool Agent 的 Planner。
 
 请将用户问题拆解为【步骤】，并为每一步选择最合适的工具：
@@ -266,3 +286,4 @@ JSON 格式：
 用户问题：
 {question}
 """
+)

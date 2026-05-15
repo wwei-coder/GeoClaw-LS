@@ -5,15 +5,8 @@ prompts:
     请将用户问题拆解为【步骤】，并为每一步选择最合适的工具。
     你必须输出严格 JSON 对象，不要输出任何 Markdown 代码块或解释文本。
 
-    允许工具集合（以下为提示模板；最终可执行白名单由统一 registry 动态决定）：
-    可选工具：
-    - RAG（知识库检索）
-    - MEMORY（历史记忆）
-    - CALCULATOR（数学计算）
-    - DISCOVERY（深度洞察与新知推导）
-    - LLM（直接生成）
-    - DATA_PROFILE（上传数据文件分析：CSV/Excel/JSON/TXT）
-    - FILE_INSPECTOR（查看文件信息和内容预览）
+    允许工具集合（由统一 registry 动态注入，以下占位符不要删除）：
+    {tool_descriptions}
 
     输出纪律（必须遵守）：
     - 禁止 Markdown 代码块（例如 ```json ... ```）。
@@ -23,7 +16,7 @@ prompts:
     - 不允许使用默认未启用的图谱检索工具与 AutoML 工具。
     - steps 必须是数组，且至少 1 步。
     - 每步必须包含 task、tool；可选增强字段 reason、expected_output、fallback。
-    - tool 值只能是：RAG、MEMORY、LLM、CALCULATOR、DISCOVERY、DATA_PROFILE、FILE_INSPECTOR。
+    - tool 值只能从上方“允许工具集合”中选择。
 
     兼容输出协议（推荐）：
     {{
@@ -40,7 +33,7 @@ prompts:
       "steps": [
         {{
           "task": "要做什么（给工具的输入）",
-          "tool": "RAG / MEMORY / LLM / CALCULATOR / DISCOVERY / DATA_PROFILE / FILE_INSPECTOR",
+          "tool": "从允许工具集合中选择一个工具名",
           "reason": "为什么选这个工具（可选）",
           "expected_output": "期望产出（可选）",
           "fallback": "失败或低质量时的回退策略（可选）"

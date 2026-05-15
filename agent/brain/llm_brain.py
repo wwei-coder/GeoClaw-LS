@@ -2,12 +2,17 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Optional
-from core.chains import HeuristicDecisionChain, MemoryQueryChain, PlannerChain, SmallTalkChain, SynthesisChain
-from core.question_classifier import is_memory_query, is_small_talk
+from agent.brain.question_classifier import is_memory_query, is_small_talk
 from utils.ollama_client import ask_ollama_async
 from utils.logger import logger
+from .decision_adapter import DecisionAdapter
+from .synthesis_adapter import SynthesisAdapter
 from .prompt_catalog import BrainPromptCatalog
 from .schemas import BrainAnswer, BrainDecision, BrainPlan, BrainPlanStep, BrainReview
+from .memory_query_adapter import MemoryQueryAdapter
+from .planner_adapter import PlannerAdapter
+from .smalltalk_adapter import SmallTalkAdapter
+from .terminology import fix_terminology_async
 
 class LLMBrain:
     """Thin brain facade that wraps existing chain-based logic."""
@@ -25,11 +30,11 @@ class LLMBrain:
         review_llm_call: Optional[Any] = None,
     ):
         self.agent_core = agent_core
-        self.planner_chain = planner_chain or PlannerChain()
-        self.decision_chain = decision_chain or HeuristicDecisionChain(agent_core=agent_core)
-        self.synthesis_chain = synthesis_chain or SynthesisChain(agent_core=agent_core)
-        self.small_talk_chain = small_talk_chain or SmallTalkChain(agent_core=agent_core)
-        self.memory_query_chain = memory_query_chain or MemoryQueryChain(agent_core=agent_core)
+        self.planner_chain = planner_chain or PlannerAdapter()
+        self.decision_chain = decision_chain or DecisionAdapter(agent_core=agent_core)
+        self.synthesis_chain = synthesis_chain or SynthesisAdapter(agent_core=agent_core)
+        self.small_talk_chain = small_talk_chain or SmallTalkAdapter(agent_core=agent_core)
+        self.memory_query_chain = memory_query_chain or MemoryQueryAdapter(agent_core=agent_core)
         self.prompt_catalog = prompt_catalog or BrainPromptCatalog()
         self._review_llm_call = review_llm_call or ask_ollama_async
 
@@ -84,17 +89,19 @@ class LLMBrain:
         sources: list,
         canceled: bool = False,
         stream_callback: Any = None,
+        persist_memory: bool = True,
     ) -> BrainAnswer:
-        res = await self.synthesis_chain.ainvoke(
-            {
-                "question": question,
-                "step_results": list(step_results or []),
-                "kb_chunks": list(kb_chunks or []),
-                "sources": list(sources or []),
-                "canceled": bool(canceled),
-                "stream_callback": stream_callback,
-            }
-        )
+        payload = {
+            "question": question,
+            "step_results": list(step_results or []),
+            "kb_chunks": list(kb_chunks or []),
+            "sources": list(sources or []),
+            "canceled": bool(canceled),
+            "stream_callback": stream_callback,
+        }
+        if not persist_memory:
+            payload["persist_memory"] = False
+        res = await self.synthesis_chain.ainvoke(payload)
         return BrainAnswer(
             answer=str(res.get("final_answer", "")),
             sources=list(res.get("final_sources", sources or []) or []),
@@ -131,7 +138,8 @@ class LLMBrain:
             return BrainReview(is_satisfactory=True, feedback="", review_count=review_count)
 
     async def normalize_answer_terms(self, answer: str, question: str = "") -> str:
-        fixer = getattr(self.agent_core, "_fix_terminology_async", None)
-        if fixer is None:
-            return answer
-        return await fixer(answer, question)
+        return await fix_terminology_async(
+            answer,
+            question,
+            prompt_catalog=self.prompt_catalog,
+        )

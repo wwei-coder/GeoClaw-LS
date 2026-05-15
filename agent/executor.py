@@ -3,9 +3,9 @@ import asyncio
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from core.config import RAG_MAX_CHUNK_LENGTH, GRAPH_REPLAN_LOW_QUALITY_THRESHOLD
+from config_runtime import RAG_MAX_CHUNK_LENGTH, GRAPH_REPLAN_LOW_QUALITY_THRESHOLD
 from .state import AgentStep, AgentTask, Artifact
 from tools.base import ToolInput, ToolResult
 from tools.registry import execute_tool
@@ -31,7 +31,7 @@ REMEDIATION_ACTIONS = {
 }
 
 def _iso_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 @dataclass
 class ToolOutcomeAssessment:
@@ -442,7 +442,7 @@ def assess_evidence_quality(
 
     if need_evidence and str(confidence_label or "").strip() == "低" and issue_type == "none":
         issue_type = "unsupported_claim_risk"
-        summary = "可信度较低，存在结论支撑不足风险。"
+        summary = "证据支撑强度较低，存在结论支撑不足风险。"
 
     assessment = EvidenceQualityAssessment(
         need_evidence=bool(need_evidence),
@@ -497,7 +497,16 @@ def assess_tool_outcome(
         chunk_count = int(metadata.get("retrieved_chunk_count") or 0)
         quality = dict(metadata.get("retrieval_quality") or {})
         quality_score = float(quality.get("score", 0.0) or 0.0)
+        has_content_evidence = bool(content) and not content.startswith("[RAG] 未检索到")
         if chunk_count <= 0:
+            if result.success and has_content_evidence:
+                return _build_assessment(
+                    tool_name=tool_key,
+                    success=True,
+                    usable=True,
+                    issue_type="none",
+                    summary="RAG 返回了可用文本证据。",
+                )
             return _build_assessment(
                 tool_name=tool_key,
                 success=bool(result.success),
@@ -507,6 +516,14 @@ def assess_tool_outcome(
                 suggested_action="建议扩展关键词重检索，或切换 DISCOVERY 进行交叉分析。",
                 retryable=True,
                 fallback_tool="DISCOVERY",
+            )
+        if quality_score <= 0 and result.success and has_content_evidence:
+            return _build_assessment(
+                tool_name=tool_key,
+                success=True,
+                usable=True,
+                issue_type="none",
+                summary="RAG 返回了可用文本证据。",
             )
         if quality_score < GRAPH_REPLAN_LOW_QUALITY_THRESHOLD:
             return _build_assessment(

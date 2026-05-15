@@ -2,8 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import yaml
-import core.config as core_config
-import core.prompts as core_prompts
+import config_runtime as core_config
 from tools.registry import render_planner_tool_descriptions
 
 @dataclass
@@ -15,8 +14,6 @@ class PromptDefinition:
     output_contract: str = ""
     template: str = ""
     source: str = ""
-    fallback_id: Optional[str] = None
-    fallback_reason: Optional[str] = None
 
     def render(self, **kwargs: Any) -> str:
         missing = [k for k in self.required_inputs if k not in kwargs]
@@ -25,7 +22,7 @@ class PromptDefinition:
         return self.template.format(**kwargs)
 
 class BrainPromptCatalog:
-    """Unified prompt catalog with metadata, contracts, and explicit fallback."""
+    """Unified prompt catalog with metadata and explicit prompt contracts."""
 
     def __init__(self, *, prompts_data: Optional[Dict[str, Any]] = None, planner_data: Optional[Dict[str, Any]] = None):
         self._prompts_data = prompts_data if prompts_data is not None else self._load_yaml(core_config.PROMPTS_PATH)
@@ -46,7 +43,7 @@ class BrainPromptCatalog:
         definition = self.get_definition(prompt_id)
         return definition.render(**kwargs)
 
-    # Backward-compatible helpers for current LLMBrain usage.
+    # Convenience helpers for current LLMBrain usage.
     def get_review_prompt_template(self) -> str:
         return self.get_definition("reviewer").template
 
@@ -54,7 +51,7 @@ class BrainPromptCatalog:
         return self.render("reviewer", question=question, answer=answer)
 
     def _build_catalog(self) -> None:
-        planner_template, planner_source, planner_fallback_id, planner_fallback_reason = self._resolve_planner_template()
+        planner_template, planner_source = self._resolve_planner_template()
         self._defs["planner"] = PromptDefinition(
             prompt_id="planner",
             version="v1",
@@ -66,8 +63,6 @@ class BrainPromptCatalog:
             ),
             template=planner_template,
             source=planner_source,
-            fallback_id=planner_fallback_id,
-            fallback_reason=planner_fallback_reason,
         )
 
         def add_prompt(
@@ -78,11 +73,10 @@ class BrainPromptCatalog:
             description: str,
             required_inputs: List[str],
             output_contract: str,
-            fallback_template: str,
             source_name: str = "config/prompts.yaml",
         ) -> None:
-            template, fallback_id, fallback_reason = self._resolve_prompt_template(yaml_key, fallback_template)
-            source = f"{source_name}:prompts.{yaml_key}" if fallback_id is None else f"{source_name}:fallback"
+            template = self._require_prompt_template(yaml_key)
+            source = f"{source_name}:prompts.{yaml_key}"
             self._defs[prompt_id] = PromptDefinition(
                 prompt_id=prompt_id,
                 version=version,
@@ -91,8 +85,6 @@ class BrainPromptCatalog:
                 output_contract=output_contract,
                 template=template,
                 source=source,
-                fallback_id=fallback_id,
-                fallback_reason=fallback_reason,
             )
 
         add_prompt(
@@ -102,7 +94,6 @@ class BrainPromptCatalog:
             description="闲聊与身份说明提示词。",
             required_inputs=["question"],
             output_contract="简短中文回复，保持专业助手定位。",
-            fallback_template=core_prompts.SMALL_TALK_PROMPT,
         )
         add_prompt(
             prompt_id="reviewer",
@@ -111,7 +102,6 @@ class BrainPromptCatalog:
             description="回答审核提示词，要求 PASS/FAIL 兼容输出。",
             required_inputs=["question", "answer"],
             output_contract='JSON，含 status(PASS/FAIL)、reason、suggestion；未来可扩展 action 字段。',
-            fallback_template=core_prompts.REVIEW_PROMPT,
         )
         add_prompt(
             prompt_id="synthesis_final_answer",
@@ -119,8 +109,7 @@ class BrainPromptCatalog:
             version="v1",
             description="最终回答综合提示词，强调资料支持边界与引用约束。",
             required_inputs=["question", "step_results", "kb_evidence"],
-            output_contract="中文专业回答；显式区分资料支持与资料未提及，禁止伪造证据。",
-            fallback_template=core_prompts.FINAL_ANSWER_PROMPT,
+            output_contract="中文专业回答；按问题复杂度自适应结构；清楚区分资料依据、资料未提及和必要推断，禁止伪造证据。",
         )
         add_prompt(
             prompt_id="semantic_rewrite",
@@ -129,7 +118,6 @@ class BrainPromptCatalog:
             description="检索语义改写提示词。",
             required_inputs=["question"],
             output_contract="输出单行改写查询，不附加解释。",
-            fallback_template=core_prompts.SEMANTIC_REWRITE_PROMPT,
         )
         add_prompt(
             prompt_id="keyword_expansion",
@@ -138,7 +126,14 @@ class BrainPromptCatalog:
             description="检索关键词扩展提示词。",
             required_inputs=["question"],
             output_contract="输出关键词文本，用于检索扩展。",
-            fallback_template=core_prompts.KEYWORD_EXPANSION_PROMPT,
+        )
+        add_prompt(
+            prompt_id="query_expansion",
+            yaml_key="query_expansion",
+            version="v1",
+            description="兼容保留的检索关键词扩展提示词。",
+            required_inputs=["question"],
+            output_contract="输出关键词文本；当前主检索链路优先使用 keyword_expansion。",
         )
         add_prompt(
             prompt_id="metadata_filter",
@@ -147,16 +142,30 @@ class BrainPromptCatalog:
             description="元数据过滤条件提取提示词。",
             required_inputs=["question"],
             output_contract="输出 JSON 过滤条件或空对象。",
-            fallback_template=core_prompts.METADATA_FILTER_PROMPT,
+        )
+        add_prompt(
+            prompt_id="follow_up_judge",
+            yaml_key="follow_up_judge",
+            version="v1",
+            description="判断当前问题是否承接对话摘要的提示词。",
+            required_inputs=["summary", "question"],
+            output_contract="仅输出 YES 或 NO。",
+        )
+        add_prompt(
+            prompt_id="context_relevance",
+            yaml_key="context_relevance",
+            version="v1",
+            description="判断当前问题与对话摘要中地质专业内容相关性的提示词。",
+            required_inputs=["summary", "question"],
+            output_contract="仅输出 0、0.5 或 1。",
         )
         add_prompt(
             prompt_id="rewrite",
             yaml_key="rewrite",
             version="v1",
-            description="术语翻译/中文化改写提示词。",
+            description="滑坡防治领域术语规范化提示词。",
             required_inputs=["text"],
-            output_contract="输出改写后的中文文本。",
-            fallback_template=core_prompts.REWRITE_PROMPT,
+            output_contract="输出滑坡防治语境下术语规范化后的文本；允许保留必要英文缩写、模型名、算法名和专有名词。",
         )
         add_prompt(
             prompt_id="fix_insar",
@@ -165,7 +174,6 @@ class BrainPromptCatalog:
             description="InSAR 术语与领域边界修正提示词。",
             required_inputs=["question", "answer"],
             output_contract="InSAR 必须解释为干涉合成孔径雷达，禁止错误映射到热红外/光学。",
-            fallback_template=core_prompts.FIX_INSAR_PROMPT,
         )
         add_prompt(
             prompt_id="discovery",
@@ -174,7 +182,6 @@ class BrainPromptCatalog:
             description="跨文献交叉洞察提示词。",
             required_inputs=["kb_evidence", "question"],
             output_contract="输出交叉证据、规律与假设，资料不足时明确说明不足。",
-            fallback_template=core_prompts.DISCOVERY_PROMPT,
         )
         add_prompt(
             prompt_id="confirmation_judge",
@@ -183,47 +190,25 @@ class BrainPromptCatalog:
             description="用户确认意图判定提示词。",
             required_inputs=["question"],
             output_contract="仅输出 YES/NO/UNRELATED。",
-            fallback_template=core_prompts.CONFIRMATION_JUDGE_PROMPT,
         )
 
-    def _resolve_planner_template(self) -> Tuple[str, str, Optional[str], Optional[str]]:
+    def _resolve_planner_template(self) -> Tuple[str, str]:
         planner_prompt = (((self._planner_data or {}).get("prompts") or {}).get("planner_task") or "").strip()
         if planner_prompt:
             rendered = self._inject_tool_descriptions(planner_prompt)
-            return rendered, "config/planner.yaml:prompts.planner_task", None, None
+            return rendered, "config/planner.yaml:prompts.planner_task"
+        raise ValueError("[PromptCatalog] config/planner.yaml 缺少必需 prompts.planner_task")
 
-        prompts_prompt = (((self._prompts_data or {}).get("prompts") or {}).get("planner_task") or "").strip()
-        if prompts_prompt:
-            rendered = self._inject_tool_descriptions(prompts_prompt)
-            return (
-                rendered,
-                "config/prompts.yaml:prompts.planner_task",
-                "planner_task.prompts_yaml",
-                "config/planner.yaml 缺少 prompts.planner_task，回退到 prompts.yaml",
-            )
-
-        fallback = self._inject_tool_descriptions(core_config.PLANNER_PROMPT)
-        return (
-            fallback,
-            "core.config.PLANNER_PROMPT",
-            "planner_task.core_config_default",
-            "config/planner.yaml 与 config/prompts.yaml 均缺失 planner_task，回退到内置默认模板",
-        )
-
-    def _resolve_prompt_template(self, key: str, fallback_template: str) -> Tuple[str, Optional[str], Optional[str]]:
+    def _require_prompt_template(self, key: str) -> str:
         value = (((self._prompts_data or {}).get("prompts") or {}).get(key) or "").strip()
         if value:
-            return value, None, None
-        return (
-            fallback_template,
-            f"{key}.core_prompts_default",
-            f"config/prompts.yaml 缺少 prompts.{key}，回退到 core.prompts 默认模板",
-        )
+            return value
+        raise ValueError(f"[PromptCatalog] config/prompts.yaml 缺少必需 prompts.{key}")
 
     def _inject_tool_descriptions(self, template: str) -> str:
         dynamic_tools = render_planner_tool_descriptions()
         if "{tool_descriptions}" in template:
-            return template.format(tool_descriptions=dynamic_tools, question="{question}")
+            return template.replace("{tool_descriptions}", dynamic_tools)
         return (
             f"{template}\n\n"
             "【当前启用工具（由统一 registry 动态注入）】\n"

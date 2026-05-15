@@ -3,7 +3,7 @@ import shutil
 import time
 import threading
 from utils.logger import logger
-from core.config import FINGERPRINT_PATH, BASE_DIR, DB_PATH
+from config_runtime import FINGERPRINT_PATH, BASE_DIR, DB_PATH
 
 RESET_FLAG_FILE = os.path.join(BASE_DIR, ".need_reset")
 VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")

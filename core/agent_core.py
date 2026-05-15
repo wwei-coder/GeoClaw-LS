@@ -1,35 +1,32 @@
 import os
-import re
 import json
 import asyncio
 import threading
 import contextvars
 from typing import Dict, List, Any, Optional
 from loguru import logger
-from utils.ollama_client import ask_ollama, ask_ollama_async
+from utils.ollama_client import ask_ollama_async
 from storage.sqlite.database_manager import DatabaseManager
 from storage.vector.vector_store import VectorStore
-from core.tools import TOOL_REGISTRY
+from tools.registry import get_tool_registry
+from core.agent_core_facades import AgentKnowledgeBaseFacade, AgentSessionFacade
 from core.graph_agent import GraphAgent
 from agent.brain import LLMBrain
+from agent.brain.terminology import fix_terminology, fix_terminology_async
 from agent.brain.prompt_catalog import get_prompt_catalog
-from agent.runtime import AgentRequestContext, GraphRuntime
+from agent.runtime import AgentRequestContext, GraphRuntime, get_request_context
 from agent.task_store import TaskStore
 from agent.task_runner import TaskRunner
 from core.file_workspace import FileWorkspace
 from capabilities.rag import RagService
 from capabilities.rag.indexing.fingerprint import diff_fingerprint, generate_fingerprint, load_fingerprint, save_fingerprint
-from core.config import (
+from capabilities.rag.rerank.rerank import get_reranker
+from config_runtime import (
     DB_PATH,
     DATA_DIR,
     FINGERPRINT_PATH,
-    TERMINOLOGY_REPLACEMENTS,
-    ALLOWED_ENGLISH_WORDS,
-    INSAR_BAD_PHRASES,
     DEFAULT_EMBEDDING_MODEL,
     OLLAMA_TEMPERATURE,
-    LLM_TEMPERATURE_TERMINOLOGY_REWRITE,
-    LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR,
     RETRIEVAL_METRICS_ENABLED,
     RETRIEVAL_METRICS_WINDOW,
     RETRIEVAL_METRICS_LOG_PATH,
@@ -39,14 +36,6 @@ from core.config import (
     RERANK_MODEL_NAME
 )
 
-from core.chains import (
-    SmallTalkChain,
-    MemoryQueryChain,
-    PlannerChain,
-    HeuristicDecisionChain,
-    RetrieverChain,
-    SynthesisChain
-)
 class AgentCore:
     def __init__(self):
         self.user_id = "default_user"
@@ -74,10 +63,24 @@ class AgentCore:
         self.active_file_id: Optional[str] = None
         self.active_files: List[Dict[str, Any]] = []
 
-        self.vector_store = VectorStore(
-            model_name=DEFAULT_EMBEDDING_MODEL,
-            index_path="vector_db"
-        )
+        reranker = get_reranker(RERANK_STRATEGY, RERANK_MODEL_NAME)
+        try:
+            self.vector_store = VectorStore(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                index_path="vector_db",
+                reranker=reranker,
+            )
+        except TypeError:
+            # Backward-compatible fallback for tests/mocks with legacy constructor signature.
+            self.vector_store = VectorStore(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                index_path="vector_db",
+            )
+            try:
+                if hasattr(self.vector_store, "set_reranker"):
+                    self.vector_store.set_reranker(reranker)
+            except Exception:
+                pass
         self.rag_service = RagService(
             vector_store=self.vector_store,
             data_dir=DATA_DIR,
@@ -89,6 +92,8 @@ class AgentCore:
             rerank_model=RERANK_MODEL_NAME,
         )
         self._sync_knowledge_base()
+        self.session_facade = AgentSessionFacade(self)
+        self.knowledge_base_facade = AgentKnowledgeBaseFacade(self)
 
         logger.info(f"[Memory] 历史对话条数 = {self.db_manager.get_conversation_count()}")
 
@@ -103,26 +108,25 @@ class AgentCore:
         # Load context for this session
         self.switch_session(self.session_id)
 
-        # Initialize LangChain Chains
-        self.planner = PlannerChain()
-        self.decision = HeuristicDecisionChain(agent_core=self)
-        self.retriever = RetrieverChain(vector_store=self.vector_store)
-        self.synthesis = SynthesisChain(agent_core=self)
-
-        self.small_talk = SmallTalkChain(agent_core=self)
-        self.memory_query = MemoryQueryChain(agent_core=self)
-        self.brain = LLMBrain(
-            self,
-            planner_chain=self.planner,
-            decision_chain=self.decision,
-            synthesis_chain=self.synthesis,
-            small_talk_chain=self.small_talk,
-            memory_query_chain=self.memory_query,
-        )
+        self.brain = LLMBrain(self)
 
         # Initialize Graph Agent
-        self.graph_agent = GraphAgent(self)
-        self.runtime = GraphRuntime(self.graph_agent)
+        graph_agent = GraphAgent(self)
+        self.runtime = GraphRuntime(graph_agent)
+
+    def _get_session_facade(self) -> AgentSessionFacade:
+        facade = getattr(self, "session_facade", None)
+        if facade is None:
+            facade = AgentSessionFacade(self)
+            self.session_facade = facade
+        return facade
+
+    def _get_knowledge_base_facade(self) -> AgentKnowledgeBaseFacade:
+        facade = getattr(self, "knowledge_base_facade", None)
+        if facade is None:
+            facade = AgentKnowledgeBaseFacade(self)
+            self.knowledge_base_facade = facade
+        return facade
 
     def _full_rebuild_knowledge_base(self, current_fp: Dict[str, Any], reason: str = "force_rebuild") -> Dict[str, Any]:
         return self.rag_service.full_rebuild(current_fp, reason=reason)
@@ -174,121 +178,35 @@ class AgentCore:
                 return summary
 
     def sync_knowledge_base_now(self) -> Dict[str, Any]:
-        return self._sync_knowledge_base()
+        return self._get_knowledge_base_facade().sync_knowledge_base_now()
 
     def get_last_kb_sync_summary(self) -> Dict[str, Any]:
-        return dict(self._last_kb_sync_summary)
+        return self._get_knowledge_base_facade().get_last_kb_sync_summary()
 
     def get_knowledge_base_status(self) -> Dict[str, Any]:
-        return self.rag_service.get_status(last_sync=dict(self._last_kb_sync_summary))
+        return self._get_knowledge_base_facade().get_knowledge_base_status()
 
     def get_document_index_stats(self) -> List[Dict[str, Any]]:
-        current_fp = generate_fingerprint(DATA_DIR)
-        saved_fp = load_fingerprint(FINGERPRINT_PATH) or {}
-        changes = diff_fingerprint(current_fp, saved_fp)
-        changed = set(changes.get("changed", []))
-        docs: List[Dict[str, Any]] = []
-        collection = getattr(self.vector_store, "collection", None)
-        for name, fp in sorted(current_fp.items()):
-            path = os.path.join(DATA_DIR, name)
-            chunk_count = 0
-            try:
-                if collection is not None:
-                    data = collection.get(where={"doc_name": name}, include=[])
-                    chunk_count = len(data.get("ids", []) or [])
-            except Exception as e:
-                logger.warning(f"[AgentCore] 获取文档切片数失败 {name}: {e}")
-            docs.append({
-                "name": name,
-                "path": path,
-                "type": os.path.splitext(name)[1].lower().lstrip(".") or "file",
-                "size": int(fp.get("size", 0) or 0),
-                "mtime": float(fp.get("mtime", 0) or 0),
-                "indexed_chunks": chunk_count,
-                "fingerprint_status": "changed" if name in changed else "synced",
-                "saved": name in saved_fp
-            })
-        for name in sorted(set(saved_fp.keys()) - set(current_fp.keys())):
-            docs.append({
-                "name": name,
-                "path": os.path.join(DATA_DIR, name),
-                "type": os.path.splitext(name)[1].lower().lstrip(".") or "file",
-                "size": int((saved_fp.get(name) or {}).get("size", 0) or 0),
-                "mtime": float((saved_fp.get(name) or {}).get("mtime", 0) or 0),
-                "indexed_chunks": 0,
-                "fingerprint_status": "removed",
-                "saved": True
-            })
-        return docs
+        return self._get_knowledge_base_facade().get_document_index_stats()
 
     def rebuild_knowledge_base_now(self) -> Dict[str, Any]:
-        current_fp = generate_fingerprint(DATA_DIR)
-        with self._kb_sync_lock:
-            summary = self._full_rebuild_knowledge_base(current_fp, reason="manual_web_reindex")
-            self._last_kb_sync_summary = summary
-            return summary
+        return self._get_knowledge_base_facade().rebuild_knowledge_base_now()
 
     def get_retrieval_diagnostics(self, limit: int = 20) -> Dict[str, Any]:
-        metrics = []
-        try:
-            if os.path.exists(RETRIEVAL_METRICS_LOG_PATH):
-                with open(RETRIEVAL_METRICS_LOG_PATH, "r", encoding="utf-8") as f:
-                    lines = f.readlines()[-max(1, int(limit)):]
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        metrics.append(json.loads(line))
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.warning(f"[AgentCore] 读取检索指标失败: {e}")
-        try:
-            vector_runtime = self.vector_store.get_runtime_stats()
-        except Exception:
-            vector_runtime = {}
-        return {
-            "metrics": metrics,
-            "last_search": dict(getattr(self.vector_store, "last_search_meta", {}) or {}),
-            "vector_runtime": vector_runtime,
-            "metrics_path": RETRIEVAL_METRICS_LOG_PATH,
-            "metrics_enabled": RETRIEVAL_METRICS_ENABLED,
-            "window": RETRIEVAL_METRICS_WINDOW
-        }
+        return self._get_knowledge_base_facade().get_retrieval_diagnostics(limit=limit)
 
     # 会话管理
     def create_new_session(self, title: str = "新对话") -> int:
-        self.session_id = self.db_manager.create_session(title)
-        self.short_memory = []
-        self.summary_memory = ""
-        logger.info(f"[Session] Created new session {self.session_id}")
-        return self.session_id
+        return self._get_session_facade().create_new_session(title)
 
     def delete_session(self, session_id: int):
-        self.db_manager.delete_session(session_id)
-        # If deleting current session, switch to another or create new
-        if self.session_id == session_id:
-            sessions = self.db_manager.get_all_sessions()
-            if sessions:
-                self.switch_session(sessions[0][0])
-            else:
-                self.create_new_session()
+        return self._get_session_facade().delete_session(session_id)
 
     def rename_session(self, session_id: int, new_title: str):
-        self.db_manager.update_session_title(session_id, new_title)
+        return self._get_session_facade().rename_session(session_id, new_title)
 
     def switch_session(self, session_id: int):
-        self.session_id = session_id
-        # Reset context for new session
-        self.short_memory = []
-        self.summary_memory = ""
-        # Reload context from DB if needed
-        recent = self.db_manager.get_recent_conversations(self.user_id, limit=4, session_id=session_id)
-        for q, a in recent:
-            self.short_memory.append(f"用户：{q}")
-            self.short_memory.append(f"助手：{a}")
-        logger.info(f"[Session] Switched to session {session_id}, loaded {len(recent)} rounds of context")
+        return self._get_session_facade().switch_session(session_id)
 
     # Tool 执行
     def execute_tool_step(self, step: dict) -> str:
@@ -298,7 +216,7 @@ class AgentCore:
         """
         tool_name = step["tool"].upper()
         task = step["task"]
-        tool_fn = TOOL_REGISTRY.get(tool_name)
+        tool_fn = get_tool_registry().get(tool_name)
         if not tool_fn:
             return f"[错误] 未知工具：{tool_name}"
 
@@ -312,169 +230,22 @@ class AgentCore:
             return f"[系统错误] 工具 {tool_name} 执行异常: {str(e)}"
 
     async def _fix_terminology_async(self, answer: str, question: str = "") -> str:
-        final_answer = answer
-
-        # 1. Check for English words (Optimized: Max 1 retry)
-        if re.search(r"[A-Za-z]{3,}", final_answer):
-             words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
-             disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
-             if disallowed:
-                 rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
-                 try:
-                     final_answer = (await ask_ollama_async(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_REWRITE)).strip()
-                 except Exception as e:
-                     logger.warning(f"[Terminology] 英文术语润色失败，保留原回答: {e}")
-
-        # 2. Hard replacements
-        for old, new in TERMINOLOGY_REPLACEMENTS:
-            final_answer = final_answer.replace(old, new)
-
-        # 3. Fix InSAR if needed
-        if "InSAR" in question:
-            if ("干涉合成孔径雷达" not in final_answer) or any(p in final_answer for p in INSAR_BAD_PHRASES):
-                fix_prompt = get_prompt_catalog().render("fix_insar", question=question, answer=final_answer)
-                try:
-                    final_answer = (await ask_ollama_async(fix_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR)).strip()
-                except Exception as e:
-                    logger.warning(f"[Terminology] InSAR 术语修正失败，保留当前回答: {e}")
-                    return final_answer
-
-                # Re-check English after fix
-                for _ in range(2):
-                    words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
-                    disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
-                    if not disallowed:
-                        break
-                    rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
-                    try:
-                        final_answer = (await ask_ollama_async(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR)).strip()
-                    except Exception as e:
-                        logger.warning(f"[Terminology] InSAR 二次英文润色失败，保留当前回答: {e}")
-                        break
-
-                for old, new in TERMINOLOGY_REPLACEMENTS:
-                    final_answer = final_answer.replace(old, new)
-
-        # 4. Clean up meta-text
-        if not any(k in question for k in ("翻译", "英文", "中文")):
-            lines = [line for line in final_answer.splitlines() if line.strip()]
-            if lines and ("允许保留 InSAR" in lines[0] or "以下是英文单词" in lines[0]):
-                lines = [
-                    line
-                    for line in lines
-                    if "允许保留 InSAR" not in line and "以下是英文单词" not in line
-                ]
-                final_answer = "\n".join(lines).strip()
-
-        return final_answer
+        return await fix_terminology_async(answer, question)
 
     def _fix_terminology(self, answer: str, question: str = "") -> str:
-        final_answer = answer
-
-        # 1. Check for English words (Optimized: Max 1 retry)
-        if re.search(r"[A-Za-z]{3,}", final_answer):
-             words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
-             disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
-             if disallowed:
-                 rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
-                 try:
-                     final_answer = ask_ollama(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_REWRITE).strip()
-                 except Exception as e:
-                     logger.warning(f"[Terminology] 英文术语润色失败，保留原回答: {e}")
-
-        # 2. Hard replacements
-        for old, new in TERMINOLOGY_REPLACEMENTS:
-            final_answer = final_answer.replace(old, new)
-
-        # 3. Fix InSAR if needed
-        if "InSAR" in question:
-            if ("干涉合成孔径雷达" not in final_answer) or any(p in final_answer for p in INSAR_BAD_PHRASES):
-                fix_prompt = get_prompt_catalog().render("fix_insar", question=question, answer=final_answer)
-                try:
-                    final_answer = ask_ollama(fix_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR).strip()
-                except Exception as e:
-                    logger.warning(f"[Terminology] InSAR 术语修正失败，保留当前回答: {e}")
-                    return final_answer
-
-                # Re-check English after fix
-                for _ in range(2):
-                    words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", final_answer)
-                    disallowed = [w for w in words if w not in ALLOWED_ENGLISH_WORDS]
-                    if not disallowed:
-                        break
-                    rewrite_prompt = get_prompt_catalog().render("rewrite", text=final_answer)
-                    try:
-                        final_answer = ask_ollama(rewrite_prompt, temperature=LLM_TEMPERATURE_TERMINOLOGY_FIX_INSAR).strip()
-                    except Exception as e:
-                        logger.warning(f"[Terminology] InSAR 二次英文润色失败，保留当前回答: {e}")
-                        break
-
-                for old, new in TERMINOLOGY_REPLACEMENTS:
-                    final_answer = final_answer.replace(old, new)
-
-        # 4. Clean up meta-text
-        if not any(k in question for k in ("翻译", "英文", "中文")):
-            lines = [line for line in final_answer.splitlines() if line.strip()]
-            if lines and ("允许保留 InSAR" in lines[0] or "以下是英文单词" in lines[0]):
-                lines = [
-                    line
-                    for line in lines
-                    if "允许保留 InSAR" not in line and "以下是英文单词" not in line
-                ]
-                final_answer = "\n".join(lines).strip()
-
-        return final_answer
+        return fix_terminology(answer, question)
 
     def _build_fallback_session_title(self, first_question: str) -> str:
-        text = (first_question or "").strip()
-        text = re.sub(r"\s+", "", text)
-        text = re.sub(r"[\"'《》“”‘’`]", "", text)
-        text = re.sub(r"[，,。！？!?:：；;（）()【】\[\]{}<>]", "", text)
-        if not text:
-            return "新对话"
-        return text[:10]
+        return self._get_session_facade().build_fallback_session_title(first_question)
 
     async def _auto_rename_session_async(self, session_id: int, first_question: str):
-        try:
-            # Short prompt to generate title
-            prompt = f"请为以下用户问题生成一个简短的会话标题（不超过10个字），直接输出标题，不要包含引号或其他文字：\n{first_question}"
-            title = await ask_ollama_async(prompt)
-            title = title.strip()
-            # Cleanup title
-            title = re.sub(r'["\'《》]', '', title)
-            if len(title) > 15:
-                title = title[:15]
-
-            if not title:
-                title = self._build_fallback_session_title(first_question)
-
-            logger.info(f"[Session] Auto-renaming session {session_id} to '{title}'")
-            self.rename_session(session_id, title)
-        except Exception as e:
-            fallback_title = self._build_fallback_session_title(first_question)
-            try:
-                self.rename_session(session_id, fallback_title)
-                logger.warning(f"[Session] Auto-rename failed: {e}；已使用兜底标题 '{fallback_title}'")
-            except Exception as rename_error:
-                logger.warning(f"[Session] Auto-rename failed: {e}；兜底重命名也失败: {rename_error}")
+        await self._get_session_facade().auto_rename_session_async(session_id, first_question)
 
     def get_active_session_id(self) -> Optional[int]:
-        req_ctx = self._request_context_var.get()
-        if req_ctx is not None and getattr(req_ctx, "session_id", None) is not None:
-            return req_ctx.session_id
-        sid = self._request_session_id_var.get()
-        if sid is not None:
-            return sid
-        sid = getattr(self, "_active_chat_session_id", None)
-        if sid is not None:
-            return sid
-        return self.session_id
+        return self._get_session_facade().get_active_session_id()
 
     def get_active_request_context(self) -> Optional[AgentRequestContext]:
-        req_ctx = self._request_context_var.get()
-        if isinstance(req_ctx, AgentRequestContext):
-            return req_ctx
-        return None
+        return get_request_context(self._request_context_var)
 
     async def chat_async(
         self,
@@ -585,12 +356,7 @@ class AgentCore:
 
     # -----------
     def load_history_to_ui(self, limit: int = 10, session_id: Optional[int] = None) -> str:
-        sid = session_id if session_id is not None else self.get_active_session_id()
-        if sid is not None:
-            rows = self.db_manager.get_conversations_by_session(sid, limit)
-        else:
-            rows = self.db_manager.get_recent_conversations(self.user_id, limit)
-        return "\n".join([f"用户：{q}\n助手：{a}" for q, a in rows])
+        return self._get_session_facade().load_history_to_ui(limit=limit, session_id=session_id)
 
     def factory_reset(self):
         self.db_manager.clear_conversations()

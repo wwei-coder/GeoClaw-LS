@@ -16,6 +16,11 @@ class TaskRepository:
     def save_artifact(self, task_id: str, artifact: Any) -> None:
         self.task_store.save_artifact(task_id=task_id, artifact=artifact)
 
+    def clear_steps_for_task(self, task_id: str) -> None:
+        clear_fn = getattr(self.task_store, "clear_steps_for_task", None)
+        if callable(clear_fn):
+            clear_fn(task_id)
+
     def get_task(self, task_id: str) -> Optional[Any]:
         return self.task_store.get_task(task_id)
 

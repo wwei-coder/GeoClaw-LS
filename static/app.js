@@ -79,8 +79,8 @@ const PATH_SEGMENT_LABELS = {
   poll_interval_seconds: "轮询间隔（秒）",
   settle_seconds: "稳定等待（秒）",
   analysis: "分析类词表",
-  complex: "复杂问题词表",
-  complex_calc: "复杂计算词表",
+  complex: "复杂问答触发词",
+  complex_calc: "复杂计算触发词",
   math: "数学词表",
   memory_query: "记忆查询词表",
   small_talk: "闲聊词表",
@@ -570,6 +570,47 @@ function formatProgress(progress) {
   return `${Math.max(0, Math.min(100, Math.round(p)))}%`;
 }
 
+function formatDateTime(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "-";
+  const d = new Date(text);
+  if (Number.isNaN(d.getTime())) return text;
+  return d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function shortText(value, maxLen = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1)}…`;
+}
+
+function formatBoolean(value) {
+  return value ? "是" : "否";
+}
+
+function pickResultSummary(step = {}) {
+  const result = step && typeof step.result === "object" && step.result ? step.result : {};
+  const content = String(result.content || "");
+  if (content.trim()) return shortText(content, 260);
+  const metadata = result && typeof result.metadata === "object" ? result.metadata : {};
+  const outcome = metadata && typeof metadata.outcome_assessment === "object" ? metadata.outcome_assessment : {};
+  return shortText(outcome.summary || outcome.trace_summary || "", 260);
+}
+
+function collectStepArtifacts(step = {}) {
+  const list = Array.isArray(step.artifacts) ? step.artifacts : [];
+  return list
+    .map((a) => {
+      const id = String((a && a.id) || "");
+      const url = (a && a.download_url) || (a && a.url) || (id ? `/api/artifacts/${encodeURIComponent(id)}` : "");
+      if (!url) return "";
+      const name = escapeHtml(String((a && a.name) || id || "产物"));
+      return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${name}</a>`;
+    })
+    .filter(Boolean);
+}
+
 function renderExecutionPanel(data, anchorBubble) {
   const chat = qs("chatArea");
   if (!chat || !anchorBubble) return;
@@ -657,19 +698,59 @@ function renderTaskDetail() {
       const steps = Array.isArray(detail.steps) ? detail.steps : [];
       const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : [];
       const progress = detail.progress || {};
+      const audit = detail.audit || {};
+      const overview = audit.overview || {};
+      const remediationMetrics = detail.remediation_metrics || audit.remediation_metrics || {};
+      const evidence = detail.evidence_quality_assessment || audit.evidence_quality_assessment || {};
+      const unresolved = Array.isArray(detail.unresolved_outcomes)
+        ? detail.unresolved_outcomes
+        : Array.isArray(audit.unresolved_outcomes)
+          ? audit.unresolved_outcomes
+          : [];
+      const remediationActions = Array.isArray(audit.remediation_actions) ? audit.remediation_actions : [];
+      const executionEvents = Array.isArray(detail.execution_trace)
+        ? detail.execution_trace
+        : Array.isArray(audit.execution_events)
+          ? audit.execution_events
+          : [];
+      const actionability = detail.actionability || {};
       const isRunning = !!detail.is_running;
       const cancelRequested = !!detail.cancel_requested;
       const statusRaw = String(task.status || "").toLowerCase();
       const answerPreview = escapeHtml(String(task.answer_preview || ""));
-      const stepsHtml = steps.length
-        ? `<ul>${steps
+      const stepPanelsHtml = steps.length
+        ? `<div class="task-step-list">${steps
             .map((s, i) => {
-              const tool = escapeHtml(String(s.tool_name || s.tool || "UNKNOWN"));
-              const status = escapeHtml(formatStepStatus(s.status));
-              const instruction = escapeHtml(String(s.instruction || s.task || ""));
-              return `<li>${i + 1}. ${tool} ${status}${instruction ? ` - ${instruction}` : ""}</li>`;
+              const metadata = s && typeof s.metadata === "object" && s.metadata ? s.metadata : {};
+              const outcome = metadata && typeof metadata.outcome_assessment === "object" ? metadata.outcome_assessment : {};
+              const decision = metadata && typeof metadata.remediation_decision === "object" ? metadata.remediation_decision : {};
+              const action = decision && typeof decision.action === "object" ? decision.action : {};
+              const actionType = String(action.action_type || "none");
+              const remediationText = shortText(
+                decision.trace_summary || action.trace_summary || decision.stop_reason || metadata.stop_reason || "",
+                180
+              );
+              const resultSummary = pickResultSummary(s);
+              const errorText = shortText(String(s.error || ""), 180);
+              const stepArtifactLinks = collectStepArtifacts(s);
+              return `
+                <article class="task-step-card">
+                  <div class="task-step-head">
+                    <span class="task-step-index">#${i + 1}</span>
+                    <span class="task-step-tool">${escapeHtml(String(s.tool_name || s.tool || "UNKNOWN"))}</span>
+                    <span class="task-step-status">${escapeHtml(formatStepStatus(s.status))}</span>
+                  </div>
+                  <div class="task-step-line"><span class="task-k">指令</span><span class="task-v">${escapeHtml(shortText(String(s.instruction || s.task || ""), 220) || "-")}</span></div>
+                  <div class="task-step-line"><span class="task-k">结果</span><span class="task-v">${escapeHtml(resultSummary || "-")}</span></div>
+                  <div class="task-step-line"><span class="task-k">错误</span><span class="task-v">${escapeHtml(errorText || "-")}</span></div>
+                  <div class="task-step-line"><span class="task-k">补救</span><span class="task-v">${escapeHtml(actionType === "none" ? "-" : actionType)}${remediationText ? `｜${escapeHtml(remediationText)}` : ""}</span></div>
+                  <div class="task-step-line"><span class="task-k">开始/结束</span><span class="task-v">${escapeHtml(formatDateTime(s.started_at))} / ${escapeHtml(formatDateTime(s.finished_at))}</span></div>
+                  <div class="task-step-line"><span class="task-k">产物</span><span class="task-v">${stepArtifactLinks.length ? stepArtifactLinks.join("，") : "-"}</span></div>
+                  <div class="task-step-line"><span class="task-k">问题类型</span><span class="task-v">${escapeHtml(String(outcome.issue_type || "none"))}</span></div>
+                </article>
+              `;
             })
-            .join("")}</ul>`
+            .join("")}</div>`
         : `<div class="task-empty">暂无步骤</div>`;
       const artifactsHtml = artifacts.length
         ? `<ul>${artifacts
@@ -682,24 +763,118 @@ function renderTaskDetail() {
             })
             .join("")}</ul>`
         : `<div class="task-empty">暂无产物</div>`;
+      const unresolvedHtml = unresolved.length
+        ? `<ul>${unresolved
+            .map((item) => {
+              const tool = escapeHtml(String(item.tool_name || "UNKNOWN"));
+              const issue = escapeHtml(String(item.issue_type || "unknown"));
+              const summary = escapeHtml(shortText(String(item.summary || item.stop_reason || ""), 120));
+              const actionType = escapeHtml(String(item.action_type || ""));
+              return `<li>${tool} / ${issue}${actionType ? ` / ${actionType}` : ""}${summary ? `：${summary}` : ""}</li>`;
+            })
+            .join("")}</ul>`
+        : `<div class="task-empty">无</div>`;
+      const remediationActionHtml = remediationActions.length
+        ? `<ul>${remediationActions
+            .map((item) => {
+              const stepIndex = Number(item.step_index || 0);
+              const tool = escapeHtml(String(item.tool_name || ""));
+              const actionType = escapeHtml(String(item.action_type || "none"));
+              const allowed = item.allowed ? "允许" : "未执行";
+              const info = escapeHtml(shortText(String(item.trace_summary || item.reason || item.stop_reason || ""), 120));
+              return `<li>#${stepIndex || "-"} ${tool} / ${actionType} / ${allowed}${info ? `：${info}` : ""}</li>`;
+            })
+            .join("")}</ul>`
+        : `<div class="task-empty">无补救动作</div>`;
+      const executionEventsHtml = executionEvents.length
+        ? `<div class="task-event-list">${executionEvents
+            .map((event, idx) => {
+              const phase = escapeHtml(String(event.phase || "unknown"));
+              const type = escapeHtml(String(event.type || "event"));
+              const summary = escapeHtml(shortText(String(event.summary || event.trace_summary || ""), 180) || "-");
+              const status = escapeHtml(String(event.status || ""));
+              const tool = escapeHtml(String(event.tool_name || ""));
+              const error = escapeHtml(shortText(String(event.error || ""), 120));
+              return `<div class="task-event-item"><span class="task-event-no">${idx + 1}.</span><span class="task-event-main">[${phase}/${type}] ${tool}${status ? ` / ${status}` : ""} - ${summary}${error ? `（${error}）` : ""}</span></div>`;
+            })
+            .join("")}</div>`
+        : `<div class="task-empty">暂无执行事件</div>`;
       const actions = [];
-      if (isRunning) {
+      if (actionability.can_cancel || isRunning) {
         actions.push(`<button class="btn btn-outline small" data-task-action="cancel" data-task-id="${escapeAttr(String(task.id || ""))}" ${cancelRequested ? "disabled" : ""}>${cancelRequested ? "取消中" : "取消任务"}</button>`);
       }
-      if (statusRaw === "failed" || statusRaw === "partial") {
+      if (actionability.can_retry || statusRaw === "failed" || statusRaw === "partial") {
         actions.push(`<button class="btn btn-outline small" data-task-action="retry" data-task-id="${escapeAttr(String(task.id || ""))}">重试任务</button>`);
       }
-      if (statusRaw === "canceled" || statusRaw === "partial" || statusRaw === "failed") {
+      if (actionability.can_resume || statusRaw === "canceled" || statusRaw === "partial" || statusRaw === "failed") {
         actions.push(`<button class="btn btn-outline small" data-task-action="resume" data-task-id="${escapeAttr(String(task.id || ""))}">继续任务</button>`);
       }
+      const statusReason = escapeHtml(String(actionability.status_reason || ""));
       nextHtml = `
     <div class="task-detail-block"><strong>问题：</strong>${escapeHtml(String(task.user_query || ""))}</div>
     <div class="task-detail-block"><strong>状态：</strong>${escapeHtml(formatTaskStatus(task.status))}</div>
+    <div class="task-detail-block"><strong>状态说明：</strong>${statusReason || "暂无"}</div>
     <div class="task-detail-block"><strong>进度：</strong>${escapeHtml(formatProgress(progress))}</div>
     <div class="task-detail-block"><strong>回答摘要：</strong>${answerPreview || "暂无"}</div>
     <div class="task-detail-block task-detail-actions">${actions.join(" ") || "暂无可用操作"}</div>
-    <div class="task-detail-block"><strong>步骤：</strong>${stepsHtml}</div>
-    <div class="task-detail-block"><strong>产物：</strong>${artifactsHtml}</div>
+
+    <section class="task-audit">
+      <div class="task-audit-title">审计概览</div>
+      <div class="task-audit-grid">
+        <div class="task-audit-item"><span>任务状态</span><strong>${escapeHtml(formatTaskStatus(overview.task_status || task.status))}</strong></div>
+        <div class="task-audit-item"><span>总步骤</span><strong>${Number(overview.total_steps ?? steps.length) || 0}</strong></div>
+        <div class="task-audit-item"><span>成功/失败/跳过</span><strong>${Number(overview.success_steps ?? 0)}/${Number(overview.failed_steps ?? 0)}/${Number(overview.skipped_steps ?? 0)}</strong></div>
+        <div class="task-audit-item"><span>补救步数</span><strong>${Number(overview.remediated_steps ?? 0)}</strong></div>
+        <div class="task-audit-item"><span>发生重规划</span><strong>${escapeHtml(formatBoolean(!!overview.replan_happened))}</strong></div>
+        <div class="task-audit-item"><span>证据支撑强度</span><strong>${escapeHtml(String(overview.final_confidence_label || "-"))}</strong></div>
+        <div class="task-audit-item"><span>Artifact 数量</span><strong>${Number(overview.artifact_count ?? artifacts.length) || 0}</strong></div>
+      </div>
+    </section>
+
+    <section class="task-audit">
+      <div class="task-audit-title">步骤面板</div>
+      ${stepPanelsHtml}
+    </section>
+
+    <section class="task-audit">
+      <div class="task-audit-title">补救记录</div>
+      <div class="task-kv-grid">
+        <div class="task-kv"><span>triggered</span><strong>${Number(remediationMetrics.remediation_triggered ?? 0)}</strong></div>
+        <div class="task-kv"><span>succeeded</span><strong>${Number(remediationMetrics.remediation_succeeded ?? 0)}</strong></div>
+        <div class="task-kv"><span>failed</span><strong>${Number(remediationMetrics.remediation_failed ?? 0)}</strong></div>
+        <div class="task-kv"><span>fused</span><strong>${Number(remediationMetrics.remediation_fused ?? 0)}</strong></div>
+        <div class="task-kv"><span>degraded_answers</span><strong>${Number(remediationMetrics.degraded_answers ?? 0)}</strong></div>
+      </div>
+      <div class="task-detail-block"><strong>unresolved_outcomes：</strong>${unresolvedHtml}</div>
+      <div class="task-detail-block"><strong>补救动作：</strong>${remediationActionHtml}</div>
+    </section>
+
+    <section class="task-audit">
+      <div class="task-audit-title">证据质量</div>
+      <div class="task-kv-grid">
+        <div class="task-kv"><span>need_evidence</span><strong>${escapeHtml(formatBoolean(!!evidence.need_evidence))}</strong></div>
+        <div class="task-kv"><span>has_sources</span><strong>${escapeHtml(formatBoolean(!!evidence.has_sources))}</strong></div>
+        <div class="task-kv"><span>source_count</span><strong>${Number(evidence.source_count ?? 0)}</strong></div>
+        <div class="task-kv"><span>retrieved_chunk_count</span><strong>${Number(evidence.retrieved_chunk_count ?? 0)}</strong></div>
+        <div class="task-kv"><span>evidence_coverage</span><strong>${Number(evidence.evidence_coverage ?? 0)}</strong></div>
+        <div class="task-kv"><span>citation_present</span><strong>${escapeHtml(formatBoolean(!!evidence.citation_present))}</strong></div>
+        <div class="task-kv"><span>separates_supported_and_inferred</span><strong>${escapeHtml(formatBoolean(!!evidence.separates_supported_and_inferred))}</strong></div>
+        <div class="task-kv"><span>issue_type</span><strong>${escapeHtml(String(evidence.issue_type || "none"))}</strong></div>
+      </div>
+      <div class="task-detail-block"><strong>summary：</strong>${escapeHtml(String(evidence.summary || "暂无"))}</div>
+    </section>
+
+    <section class="task-audit">
+      <details class="task-trace-fold">
+        <summary>执行事件（${executionEvents.length}）</summary>
+        ${executionEventsHtml}
+      </details>
+    </section>
+
+    <section class="task-audit">
+      <div class="task-audit-title">任务产物</div>
+      ${artifactsHtml}
+    </section>
   `;
     }
   }
@@ -1072,29 +1247,6 @@ function markSettingsDirty(flag = true) {
   qs("settingsStatus").style.color = flag ? "#ef4444" : "#10b981";
 }
 
-function renderConfigRuntimeNotice() {
-  const box = qs("configRuntimeNotice");
-  if (!box) return;
-  const effective = state.configEffective || {};
-  if (!effective.provider_locked) {
-    box.classList.add("hidden");
-    box.textContent = "";
-    return;
-  }
-  const provider = String(effective.effective_provider || "ollama");
-  const reason = String(effective.provider_lock_reason || "");
-  const ignored = Array.isArray(effective.ignored_paths) ? effective.ignored_paths.join(", ") : "";
-  const parts = [
-    `当前实际生效 provider：${provider}`,
-    reason || "当前版本存在 provider 锁定。",
-  ];
-  if (ignored) {
-    parts.push(`已忽略配置路径：${ignored}`);
-  }
-  box.textContent = parts.join("；");
-  box.classList.remove("hidden");
-}
-
 async function loadSettings() {
   const data = await api("/api/config");
   state.settingsItems = data.editable_items_enriched || data.items || [];
@@ -1104,7 +1256,6 @@ async function loadSettings() {
   state.configCategories = data.categories || (data.metadata && data.metadata.categories) || [];
   state.configEffective = data.effective || {};
   state.selectedCategory = "";
-  renderConfigRuntimeNotice();
   renderTree();
   renderSettingsForm();
   renderHint("");
@@ -1465,7 +1616,6 @@ function bindEvents() {
       body: JSON.stringify({ data: state.settingsData }),
     });
     state.configEffective = result.effective || state.configEffective || {};
-    renderConfigRuntimeNotice();
     markSettingsDirty(false);
     const lockReason = String((result && result.warning) || "");
     const msg = lockReason

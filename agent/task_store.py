@@ -1,10 +1,13 @@
 from __future__ import annotations
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from utils.logger import logger
 from .state import AgentStep, AgentTask, Artifact
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 class TaskStore:
     """Agent 任务持久化存储（基于现有 SQLite 连接）。"""
@@ -173,7 +176,7 @@ class TaskStore:
                 if final_answer is None:
                     cur.execute(
                         "UPDATE agent_tasks SET status = ?, updated_at = ? WHERE id = ?",
-                        (str(status), datetime.utcnow().replace(microsecond=0).isoformat() + "Z", str(task_id)),
+                        (str(status), _iso_now(), str(task_id)),
                     )
                 else:
                     cur.execute(
@@ -181,7 +184,7 @@ class TaskStore:
                         (
                             str(status),
                             str(final_answer),
-                            datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                            _iso_now(),
                             str(task_id),
                         ),
                     )
@@ -198,13 +201,25 @@ class TaskStore:
                     "UPDATE agent_tasks SET cancel_requested = ?, updated_at = ? WHERE id = ?",
                     (
                         1 if cancel_requested else 0,
-                        datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                        _iso_now(),
                         str(task_id),
                     ),
                 )
                 conn.commit()
             except Exception as exc:
                 logger.warning(f"[TaskStore] 更新取消标记失败: {exc}")
+
+    def clear_steps_for_task(self, task_id: str) -> None:
+        if not str(task_id or "").strip():
+            return
+        with self._lock():
+            try:
+                conn = self._connection()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM agent_steps WHERE task_id = ?", (str(task_id),))
+                conn.commit()
+            except Exception as exc:
+                logger.warning(f"[TaskStore] 清理任务步骤失败: {exc}")
 
     def save_step(self, task_id: str, step: AgentStep, position: int) -> None:
         with self._lock():
@@ -544,7 +559,7 @@ class TaskStore:
                         (
                             safe_status,
                             self._safe_json_dumps(metadata),
-                            datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                            _iso_now(),
                             str(task_id),
                         ),
                     )

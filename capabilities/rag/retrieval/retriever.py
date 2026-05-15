@@ -1,4 +1,4 @@
-"""Retriever utility helpers used by RetrieverChain."""
+"""Retriever utility helpers used by the RAG retrieval pipeline."""
 
 from __future__ import annotations
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from typing import Any, Optional
-
 from storage.sqlite import TaskRepository
 from utils.logger import logger
 
@@ -60,3 +58,13 @@ class RuntimePersistence:
             self.task_repository.save_artifact(task_id=task_id, artifact=artifact)
         except Exception as exc:  # pragma: no cover
             logger.warning(f"[RuntimePersistence] 保存产物失败（已忽略）: {exc}")
+
+    def clear_steps_for_task(self, task_id: str) -> None:
+        if not self.task_repository:
+            return
+        try:
+            clear_fn = getattr(self.task_repository, "clear_steps_for_task", None)
+            if callable(clear_fn):
+                clear_fn(task_id)
+        except Exception as exc:  # pragma: no cover
+            logger.warning(f"[RuntimePersistence] 清理任务步骤失败（已忽略）: {exc}")

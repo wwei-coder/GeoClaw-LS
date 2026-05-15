@@ -2,8 +2,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from agent.runtime.schemas import AgentRequestContext
 from utils.logger import logger
@@ -11,7 +11,7 @@ from .state import AgentTask
 from .task_store import TaskStore
 
 def _iso_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 class TaskRunner:
     """轻量后台任务运行器（本地串行）。"""
@@ -160,7 +160,10 @@ class TaskRunner:
         record = self.task_store.get_task_record(task_id)
         if not record:
             raise ValueError("任务不存在")
-        if record.get("status") == "success" and not step_id:
+        status = str(record.get("status") or "").strip().lower()
+        if self.is_running(task_id) or status in {"running", "pending"}:
+            raise ValueError("任务仍在运行中，不能重试")
+        if status == "success" and not step_id:
             raise ValueError("任务已成功完成，无需重试")
         metadata = dict(record.get("metadata") or {})
         if step_id:
@@ -185,7 +188,10 @@ class TaskRunner:
         record = self.task_store.get_task_record(task_id)
         if not record:
             raise ValueError("任务不存在")
-        if record.get("status") == "success":
+        status = str(record.get("status") or "").strip().lower()
+        if self.is_running(task_id) or status in {"running", "pending"}:
+            raise ValueError("任务仍在运行中，不能继续")
+        if status == "success":
             raise ValueError("任务已成功完成，无需继续")
         metadata = dict(record.get("metadata") or {})
         message = record.get("user_query", "")

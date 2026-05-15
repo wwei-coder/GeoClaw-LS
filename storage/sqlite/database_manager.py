@@ -106,6 +106,25 @@ class DatabaseManager:
             )
             return self.cursor.fetchall()
 
+    def get_conversation_records_by_session(self, session_id, limit=50):
+        with self._lock:
+            self.cursor.execute(
+                """
+                SELECT id, question, answer, timestamp FROM (
+                    SELECT id, question, answer, timestamp FROM conversations
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+            """,
+                (session_id, limit),
+            )
+            return [
+                {"id": row[0], "question": row[1], "answer": row[2], "timestamp": row[3]}
+                for row in self.cursor.fetchall()
+            ]
+
     def get_recent_conversations(self, user_id, limit=3, session_id=None):
         with self._lock:
             query = "SELECT question, answer FROM conversations WHERE user_id = ?"

@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
 
 @dataclass
 class AgentRequestContext:
@@ -13,7 +11,6 @@ class AgentRequestContext:
     task_id: Optional[str] = None
     cancel_event: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass
 class RuntimeStepEvent:
@@ -26,7 +23,6 @@ class RuntimeStepEvent:
     finished_at: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass
 class RuntimeArtifactEvent:
     task_id: str
@@ -36,7 +32,6 @@ class RuntimeArtifactEvent:
     path: str = ""
     url: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass
 class RuntimeExecutionResult:

@@ -1,123 +1,248 @@
+import importlib
 import os
 import sys
-import importlib
+from typing import Iterable, List, Sequence, Tuple
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from utils.logger import logger
-from core.config import (
-    EMBEDDING_BACKEND,
+from config_runtime import (
+    CONFIG_PATH,
+    DATA_DIR,
+    DB_PATH,
     DEFAULT_EMBEDDING_MODEL,
+    EMBEDDING_BACKEND,
+    FINGERPRINT_PATH,
     LLM_PROVIDER,
     OLLAMA_URL,
-    LLM_API_BASE_URL,
-    LLM_API_KEY,
+    PLANNER_PATH,
+    PROMPTS_PATH,
+    VECTOR_DB_PATH,
 )
 
-def check_file(path, desc):
-    if os.path.exists(path):
-        logger.info(f"✅ {desc} 存在: {os.path.basename(path)}")
-        return True
-    else:
-        logger.error(f"❌ {desc} 缺失: {path}")
-        return False
+LEGACY_TOP_LEVEL_PATHS = ("rag/", "knowledge/", "memory/")
 
-def check_import(module_name, desc, pip_hint=None):
+
+def check_file(path: str, desc: str) -> bool:
+    if os.path.exists(path):
+        logger.info(f"✅ {desc} 存在: {path}")
+        return True
+    logger.error(f"❌ {desc} 缺失: {path}")
+    return False
+
+
+def check_import(module_name: str, desc: str, pip_hint: str | None = None) -> bool:
     try:
         importlib.import_module(module_name)
         logger.info(f"✅ 依赖可导入: {desc} ({module_name})")
         return True
-    except Exception as e:
+    except Exception as exc:
         hint = f" | 安装: {pip_hint}" if pip_hint else ""
-        logger.error(f"❌ 依赖导入失败: {desc} ({module_name}) -> {e}{hint}")
+        logger.error(f"❌ 依赖导入失败: {desc} ({module_name}) -> {exc}{hint}")
         return False
 
-def run_health_check():
+
+def collect_boundary_paths() -> List[Tuple[str, str]]:
+    return [
+        ("api", "API 路由层目录"),
+        ("services", "服务编排层目录"),
+        ("agent/brain", "Brain 边界目录"),
+        ("agent/runtime", "Runtime 边界目录"),
+        ("agent/workflow", "Workflow 边界目录"),
+        ("agent/policies", "Policies 边界目录"),
+        ("tools", "工具层目录"),
+        ("capabilities", "能力层目录"),
+        ("storage", "存储层目录"),
+        ("config_runtime.py", "运行配置事实源"),
+        ("app.py", "应用入口"),
+        ("config/config.yaml", "主配置文件"),
+        ("config/prompts.yaml", "提示词配置"),
+        ("config/planner.yaml", "Planner 配置"),
+        ("data", "知识库目录"),
+    ]
+
+
+def _join_project_path(relative_path: str) -> str:
+    return os.path.join(PROJECT_ROOT, relative_path.replace("/", os.sep))
+
+
+def _build_optional_status_checks() -> List[Tuple[str, str]]:
+    return [
+        (os.path.join(PROJECT_ROOT, "workspace"), "workspace 运行目录"),
+        (VECTOR_DB_PATH, "vector_db 运行目录"),
+        (DB_PATH, "long_term_memory.db 数据库"),
+        (FINGERPRINT_PATH, "doc_fingerprint.json 指纹文件"),
+    ]
+
+
+def _check_optional_runtime_state(paths: Iterable[Tuple[str, str]]) -> None:
+    logger.info("[正在检查运行数据状态（只读，不修改）...]")
+    for path, desc in paths:
+        if os.path.exists(path):
+            logger.info(f"✅ {desc} 已存在: {path}")
+        else:
+            logger.warning(f"⚠️ {desc} 当前不存在: {path}（首次运行或尚未生成时可接受）")
+
+
+def _check_local_embedding_model() -> bool:
+    if EMBEDDING_BACKEND != "sentence_transformers":
+        logger.info(f"✅ 当前嵌入后端为 {EMBEDDING_BACKEND}，无需检查本地 sentence-transformers 模型目录")
+        return True
+    if check_file(DEFAULT_EMBEDDING_MODEL, "本地嵌入模型"):
+        return True
+    logger.warning("⚠️ 本地嵌入模型缺失；若当前环境依赖 sentence-transformers，本项属于真实故障")
+    return False
+
+
+def _build_dependency_checks() -> Sequence[Tuple[str, str]]:
+    checks: List[Tuple[str, str]] = [
+        ("requests", "HTTP 请求"),
+        ("yaml", "YAML 解析"),
+        ("fastapi", "FastAPI"),
+        ("uvicorn", "Uvicorn"),
+        ("chromadb", "向量数据库"),
+        ("jieba", "中文分词"),
+        ("fitz", "PDF 解析 (PyMuPDF)"),
+        ("docx", "Word 解析（python-docx）"),
+        ("langgraph", "LangGraph 编排"),
+    ]
+    if EMBEDDING_BACKEND == "sentence_transformers":
+        checks.append(("sentence_transformers", "Embedding 模型"))
+    return checks
+
+
+def _check_runtime_config_import() -> bool:
+    logger.info("[正在检查 config_runtime 关键常量...]")
+    try:
+        runtime = importlib.import_module("config_runtime")
+        required = [
+            "CONFIG_PATH",
+            "PROMPTS_PATH",
+            "PLANNER_PATH",
+            "DATA_DIR",
+            "DB_PATH",
+            "VECTOR_DB_PATH",
+            "OLLAMA_URL",
+            "LLM_PROVIDER",
+        ]
+        missing = [name for name in required if not hasattr(runtime, name)]
+        if missing:
+            logger.error(f"❌ config_runtime 缺少关键常量: {missing}")
+            return False
+        logger.info("✅ config_runtime 关键常量可导入")
+        logger.info(f"✅ 模型提供方配置可读: LLM_PROVIDER={LLM_PROVIDER}, OLLAMA_URL={OLLAMA_URL}")
+        return True
+    except Exception as exc:
+        logger.error(f"❌ config_runtime 导入失败: {exc}")
+        return False
+
+def _check_app_entrypoint() -> bool:
+    logger.info("[正在检查 app.py 可导入状态...]")
+    try:
+        module = importlib.import_module("app")
+        app_obj = getattr(module, "app", None)
+        if app_obj is None:
+            logger.error("❌ app.py 已导入，但未暴露 app 对象")
+            return False
+        try:
+            fastapi_module = importlib.import_module("fastapi")
+            fastapi_cls = getattr(fastapi_module, "FastAPI", None)
+            if fastapi_cls is not None and not isinstance(app_obj, fastapi_cls):
+                logger.error("❌ app.py 已导入，但 app 不是 FastAPI 实例")
+                return False
+        except Exception:
+            logger.warning("⚠️ FastAPI 类型校验跳过：无法导入 fastapi 类型")
+        logger.info("✅ app.py 可导入，且暴露 FastAPI app")
+        return True
+    except Exception as exc:
+        logger.error(f"❌ app.py 导入失败: {exc}")
+        return False
+
+def _check_boundary_imports() -> bool:
+    logger.info("[正在尝试导入当前主边界模块...]")
+    modules = [
+        "api.routes_health",
+        "services.agent_service",
+        "agent.brain",
+        "agent.runtime",
+        "agent.workflow",
+        "agent.policies",
+        "tools.registry",
+        "capabilities.registry",
+        "storage.sqlite.task_repository",
+    ]
+    ok = True
+    for module_name in modules:
+        try:
+            importlib.import_module(module_name)
+            logger.info(f"✅ 边界模块可导入: {module_name}")
+        except Exception as exc:
+            logger.error(f"❌ 边界模块导入失败: {module_name} -> {exc}")
+            ok = False
+    return ok
+
+def _build_ollama_tags_url() -> str:
+    if OLLAMA_URL.endswith("/api/generate"):
+        return OLLAMA_URL[: -len("/api/generate")] + "/api/tags"
+    return OLLAMA_URL.rstrip("/") + "/api/tags"
+
+def _check_llm_config_and_optional_probe() -> bool:
+    logger.info("[正在检查模型访问配置...]")
+    if not OLLAMA_URL:
+        logger.error("❌ 当前使用 Ollama，但 OLLAMA_URL 不可读")
+        return False
+
+    logger.info(f"✅ Ollama 地址配置可读: {OLLAMA_URL}")
+    try:
+        requests = importlib.import_module("requests")
+        tags_url = _build_ollama_tags_url()
+        resp = requests.get(tags_url, timeout=3)
+        if resp.status_code == 200:
+            logger.info(f"✅ Ollama 服务可访问: {tags_url}")
+        else:
+            logger.warning(f"⚠️ Ollama 返回状态码 {resp.status_code}: {tags_url}（环境提示，不视为结构故障）")
+    except Exception as exc:
+        logger.warning(f"⚠️ Ollama 当前不可访问: {exc}（环境提示，不视为结构故障）")
+    return True
+
+def run_health_check() -> bool:
     logger.info("====== 开始系统完整性检查 ======")
     logger.info(f"🐍 Python 解释器路径: {sys.executable}")
     logger.info(f"🐍 Python 版本: {sys.version.split()[0]}")
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    files_to_check = [
-        ("core/agent_core.py", "核心逻辑"),
-        ("core/config.py", "系统配置"),
-        ("core/graph_agent.py", "图代理逻辑"),
-        ("core/planner.py", "规划器模块"),
-        ("memory/vector_store.py", "向量库模块"),
-        ("memory/rerank.py", "重排序模块"),
-        ("knowledge/knowledge_loader.py", "知识库解析"),
-        ("utils/download_model.py", "模型下载脚本"),
-        ("utils/ollama_client.py", "LLM 客户端"),
-    ]
+    if PROJECT_ROOT not in sys.path:
+        sys.path.append(PROJECT_ROOT)
 
     all_ok = True
-    for fname, desc in files_to_check:
-        if not check_file(os.path.join(base_dir, fname), desc):
+
+    logger.info("[正在检查当前主边界文件与目录...]")
+    for relative_path, desc in collect_boundary_paths():
+        if any(relative_path.startswith(prefix) for prefix in LEGACY_TOP_LEVEL_PATHS):
+            logger.error(f"❌ 健康检查仍引用旧顶层路径: {relative_path}")
+            all_ok = False
+            continue
+        if not check_file(_join_project_path(relative_path), desc):
             all_ok = False
 
-    if EMBEDDING_BACKEND == "sentence_transformers":
-        model_path = DEFAULT_EMBEDDING_MODEL
-        if not check_file(model_path, "本地嵌入模型"):
-            logger.warning("⚠️ 提示: 本地模型缺失，请运行 'python utils\\download_model.py' 进行下载。")
-            all_ok = False
+    _check_optional_runtime_state(_build_optional_status_checks())
 
     logger.info("[正在检查第三方依赖...]")
     pip_prefix = f'"{sys.executable}" -m pip install '
-    deps = [
-        ("requests", "HTTP 请求", pip_prefix + "requests"),
-        ("chromadb", "向量数据库", pip_prefix + "chromadb"),
-        ("sentence_transformers", "Embedding 模型", pip_prefix + "sentence-transformers"),
-        ("jieba", "中文分词", pip_prefix + "jieba"),
-        ("fitz", "PDF 解析 (PyMuPDF)", pip_prefix + "pymupdf"),
-        ("docx", "Word 解析（python-docx）", pip_prefix + "python-docx"),
-        ("langchain", "LangChain 框架", pip_prefix + "langchain"),
-        ("langgraph", "LangGraph 编排", pip_prefix + "langgraph"),
-        ("customtkinter", "UI 框架", pip_prefix + "customtkinter"),
-    ]
-
-    for module_name, desc, hint in deps:
-        if not check_import(module_name, desc, hint):
+    for module_name, desc in _build_dependency_checks():
+        if not check_import(module_name, desc, pip_prefix + module_name):
             all_ok = False
 
-    if LLM_PROVIDER in {"openai", "openai_compatible", "api", "remote"}:
-        logger.info("[正在检查 API 模型配置...]")
-        if not LLM_API_BASE_URL:
-            logger.error("❌ 当前使用 API 模型，但 models.api.base_url 未配置")
-            all_ok = False
-        else:
-            logger.info(f"✅ API Base URL 已配置: {LLM_API_BASE_URL}")
-        if not LLM_API_KEY:
-            logger.error("❌ 当前使用 API 模型，但 models.api.api_key 未配置")
-            all_ok = False
-        else:
-            logger.info("✅ API Key 已配置")
-    else:
-        logger.info("[正在检查 Ollama 服务...]")
-        try:
-            requests = importlib.import_module("requests")
-            tags_url = OLLAMA_URL.replace("/api/generate", "/api/tags")
-            resp = requests.get(tags_url, timeout=3)
-            if resp.status_code == 200:
-                logger.info(f"✅ Ollama 服务可访问: {tags_url}")
-            else:
-                logger.warning(f"⚠️ Ollama 返回状态码: {resp.status_code}")
-                all_ok = False
-        except Exception as e:
-            logger.error(f"❌ Ollama 不可访问: {e}")
-            logger.warning("⚠️ 提示: 请确认已启动 Ollama 服务")
-            all_ok = False
-
-    logger.info("[正在尝试导入核心模块...]")
-    # Add project root to path
-    sys.path.append(base_dir)
-    try:
-        importlib.import_module("core.agent_core")
-        importlib.import_module("memory.vector_store")
-        importlib.import_module("utils.ollama_client")
-        logger.info("✅ 核心模块导入成功")
-    except ImportError as e:
-        logger.error(f"❌ 导入失败 (缺包?): {e}")
+    if not _check_runtime_config_import():
         all_ok = False
-    except Exception as e:
-        logger.error(f"❌ 导入时发生错误: {e}")
+    if not _check_app_entrypoint():
+        all_ok = False
+    if not _check_boundary_imports():
+        all_ok = False
+    if not _check_local_embedding_model():
+        all_ok = False
+    if not _check_llm_config_and_optional_probe():
         all_ok = False
 
     logger.info("====== 检查结束 ======")

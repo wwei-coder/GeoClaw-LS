@@ -1,7 +1,6 @@
 import sys
 import os
 from loguru import logger
-
 # Create logs directory if it doesn't exist
 # Go up one level from utils to project root
 log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")

@@ -1,6 +1,11 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from tools.registry import execute_tool, get_tool_registry
 
 class _WorkspaceNoFile:
@@ -8,7 +13,6 @@ class _WorkspaceNoFile:
 
     def resolve_file_from_query(self, query: str, fallback_file_id=None):  # noqa: D401
         return None
-
 
 class _WorkspaceUnsafePath:
     uploads_dir = Path("workspace/uploads").resolve()
@@ -22,12 +26,10 @@ class _WorkspaceUnsafePath:
             "abs_path": str(Path("d:/outside/unsafe.csv").resolve()),
         }
 
-
 class _AgentStub:
     def __init__(self, workspace=None):
         self.file_workspace = workspace
         self.active_file_id = None
-
 
 def _assert(condition: bool, msg: str, failures: list[str]) -> None:
     if condition:
@@ -35,7 +37,6 @@ def _assert(condition: bool, msg: str, failures: list[str]) -> None:
     else:
         print(f"[FAIL] {msg}")
         failures.append(msg)
-
 
 def main() -> int:
     failures: list[str] = []
@@ -58,7 +59,6 @@ def main() -> int:
         return 1
     print("\n全部检查通过")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

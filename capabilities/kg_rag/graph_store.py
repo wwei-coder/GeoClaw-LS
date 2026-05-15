@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from dataclasses import replace
 from typing import Dict, List, Optional
-
 from .schemas import Entity, Relation
-
 
 class InMemoryGraphStore:
     """Pure in-memory graph store stub for KG-RAG capability."""

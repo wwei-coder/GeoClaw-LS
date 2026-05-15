@@ -16,6 +16,7 @@ from .retriever import (
     rewrite_query,
     rewrite_query_async,
 )
+from .pipeline import RagRetrievalPipeline
 
 __all__ = [
     "parse_metadata_filter",
@@ -33,4 +34,5 @@ __all__ = [
     "is_fast_path_good_enough",
     "ensure_metrics_state",
     "record_retrieval_metrics",
+    "RagRetrievalPipeline",
 ]

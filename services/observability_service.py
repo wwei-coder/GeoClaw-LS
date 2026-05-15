@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict
-from api.context import read_observability_enabled_from_config, write_observability_enabled_to_config
+from services.config_io import read_observability_enabled_from_config, write_observability_enabled_to_config
 
 class ObservabilityService:
     def status(self) -> Dict[str, Any]:

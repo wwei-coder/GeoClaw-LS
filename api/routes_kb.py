@@ -1,7 +1,5 @@
-import re
 import os
 import time
-import threading
 from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
@@ -12,26 +10,6 @@ router = APIRouter()
 service = KnowledgeBaseService()
 KB_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 KB_DATA_DIR = APP_ROOT / "data"
-
-def _safe_name(file_name: str) -> str:
-    name = Path(file_name or "").name.strip()
-    name = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", name)
-    return name or "knowledge.txt"
-
-def _reserve_unique_path(base_dir: Path, file_name: str) -> Path:
-    candidate = (base_dir / file_name).resolve()
-    if base_dir not in candidate.parents:
-        raise HTTPException(status_code=400, detail="文件名非法")
-    if not candidate.exists():
-        return candidate
-    stem = Path(file_name).stem or "knowledge"
-    suffix = Path(file_name).suffix
-    for idx in range(1, 1000):
-        named = f"{stem}_{idx}{suffix}"
-        next_path = (base_dir / named).resolve()
-        if base_dir in next_path.parents and not next_path.exists():
-            return next_path
-    raise HTTPException(status_code=500, detail="同名文件过多，请先清理后重试")
 
 @router.post("/api/kb/sync")
 def sync_kb():
@@ -100,24 +78,19 @@ async def kb_upload(file: UploadFile = File(...)):
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail=f"文件过大，单文件不能超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
-    if not content:
-        raise HTTPException(status_code=400, detail="文件为空，请重新选择")
-
-    KB_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = _safe_name(file.filename or f"knowledge{suffix}")
-    target_path = _reserve_unique_path(KB_DATA_DIR.resolve(), safe_name)
-
     try:
-        target_path.write_bytes(content)
+        return service.save_kb_upload(
+            filename=file.filename or f"knowledge{suffix}",
+            content=content,
+            data_dir=KB_DATA_DIR,
+        )
+    except ValueError as exc:
+        if str(exc) in {"文件为空，请重新选择", "文件名非法"}:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
+    except FileExistsError as exc:
+        if str(exc) == "同名文件过多，请先清理后重试":
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"保存失败：{exc}") from exc
-
-    return {
-        "ok": True,
-        "file": {
-            "original_name": file.filename or safe_name,
-            "saved_name": target_path.name,
-            "size": len(content),
-            "relative_path": str(Path("data") / target_path.name),
-        },
-    }

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from capabilities.base import CapabilityMetadata, CapabilityToolSpec
-from capabilities.rag.tool import RagTool
+from tools.rag_tool import RagTool
 
 def get_capability() -> CapabilityMetadata:
     return CapabilityMetadata(

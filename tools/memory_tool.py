@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Any
 from capabilities.memory.tools import build_memory_tool_content
-from utils.logger import logger
 from tools.base import BaseTool, ToolInput, ToolResult
 
 class MemoryTool(BaseTool):

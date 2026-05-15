@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Any
-from core.config import LLM_TEMPERATURE_DISCOVERY, TOOL_DISCOVERY_TOP_K
-from core.prompts import DISCOVERY_PROMPT
+from config_runtime import LLM_TEMPERATURE_DISCOVERY, TOOL_DISCOVERY_TOP_K
 from tools.base import BaseTool, ToolInput, ToolResult
 from utils.ollama_client import ask_ollama
 
@@ -21,7 +20,10 @@ class DiscoveryTool(BaseTool):
                 doc = item.get("doc_name", "未知来源")
                 txt = item.get("content", "").strip()
                 evidence.append(f"《{doc}》:\n{txt}")
-            prompt = DISCOVERY_PROMPT.format(
+            from agent.brain.prompt_catalog import get_prompt_catalog
+
+            prompt = get_prompt_catalog().render(
+                "discovery",
                 question=tool_input.task,
                 kb_evidence="\n----\n".join(evidence),
             )

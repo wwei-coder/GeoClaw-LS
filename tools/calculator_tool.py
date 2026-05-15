@@ -1,7 +1,7 @@
 from __future__ import annotations
 import ast
 from typing import Any
-from core.config import CALCULATOR_MAX_EXPRESSION_LEN
+from config_runtime import CALCULATOR_MAX_EXPRESSION_LEN
 from tools.base import BaseTool, ToolInput, ToolResult
 
 _ALLOWED_BIN_OPS = {

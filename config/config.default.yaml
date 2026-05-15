@@ -136,14 +136,6 @@ llm:
     terminology_fix_insar: 0.2
     terminology_rewrite: 0.1
 models:
-  provider: ollama
-  api:
-    base_url: ""
-    api_key: ""
-    model: gpt-4o-mini
-    timeout: 60
-    stream_timeout: 120
-    max_tokens: 0
   embedding: BAAI/bge-small-zh-v1.5
   embedding_backend: sentence_transformers
   embedding_ollama_batch_size: 16

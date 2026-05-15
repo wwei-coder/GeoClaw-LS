@@ -18,16 +18,13 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
-from capabilities.rag.rerank.rerank import get_reranker
-from core.config import (
+from config_runtime import (
     BASE_DIR,
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_BACKEND,
     EMBEDDING_OLLAMA_BATCH_SIZE,
     EMBEDDING_OLLAMA_TIMEOUT,
     EMBEDDING_OLLAMA_URL,
-    RERANK_MODEL_NAME,
-    RERANK_STRATEGY,
     VECTOR_BATCH_SIZE,
     VECTOR_COLLECTION_NAME,
     VECTOR_DB_PATH,
@@ -45,6 +42,7 @@ from core.config import (
     VECTOR_SEARCH_RRF_K,
     VECTOR_SEARCH_TOP_K,
 )
+from .rerank_types import Reranker
 
 class OllamaEmbeddingClient:
     def __init__(self, model_name: str, endpoint: str, timeout: int = 60, batch_size: int = 16):
@@ -119,6 +117,7 @@ class VectorStore:
         self,
         model_name: Optional[str] = None,
         index_path: str = "vector_db",
+        reranker: Optional[Reranker] = None,
     ):
         """
         Initialize the VectorStore.
@@ -148,8 +147,11 @@ class VectorStore:
         self.collection = self.client.get_or_create_collection(name=VECTOR_COLLECTION_NAME, metadata=self._collection_metadata())
         logger.info(f"📦 Loaded ChromaDB Collection '{VECTOR_COLLECTION_NAME}', count: {self.collection.count()}")
 
-        logger.info(f"[VectorStore] Initializing Reranker with strategy: {RERANK_STRATEGY}")
-        self.reranker = get_reranker(RERANK_STRATEGY, RERANK_MODEL_NAME)
+        self.reranker = reranker
+        if self.reranker:
+            logger.info("[VectorStore] Reranker injected")
+        else:
+            logger.info("[VectorStore] No reranker injected; search will use base ranking only")
 
         # Initialize BM25
         self.bm25 = None
@@ -164,6 +166,10 @@ class VectorStore:
         self._cache_misses = 0
         self.kb_version = f"{int(time.time())}-{self.collection.count()}"
         self.last_search_meta: Dict[str, Any] = {}
+
+    def set_reranker(self, reranker: Optional[Reranker]) -> None:
+        self.reranker = reranker
+        self._invalidate_cache()
 
     def _encode_texts(self, texts: List[str]) -> List[List[float]]:
         vectors = self.model.encode(texts)

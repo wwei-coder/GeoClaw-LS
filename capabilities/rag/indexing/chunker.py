@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from core.config import (
+from config_runtime import (
     CHUNK_CHILD_DEFAULT_SIZE,
     CHUNK_CHILD_NUMERIC_SIZE,
     CHUNK_CHILD_NUMERIC_THRESHOLD,

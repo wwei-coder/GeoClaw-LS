@@ -7,21 +7,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from api.context import (
-    ChatRequest,
-    CreateSessionRequest,
-    CreateTaskRequest,
     DEFAULT_WEB_PORT,
-    ObservabilityToggleRequest,
     PORT_SCAN_LIMIT,
-    RenameSessionRequest,
-    RetryTaskRequest,
     STATIC_DIR,
-    SaveConfigRequest,
     ResetPendingError,
-    bridge,
     logger,
-    read_observability_enabled_from_config,
 )
+from services.config_io import read_observability_enabled_from_config
 from api.routes_chat import router as chat_router
 from api.routes_config import router as config_router
 from api.routes_files import router as files_router

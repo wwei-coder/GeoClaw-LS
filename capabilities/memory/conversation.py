@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from typing import Any, Dict, Optional
-
 
 def collect_agent_memory(agent: Any, *, recent_limit: int = 6) -> Dict[str, str]:
     summary = getattr(agent, "summary_memory", "") or ""
@@ -12,7 +10,6 @@ def collect_agent_memory(agent: Any, *, recent_limit: int = 6) -> Dict[str, str]
         recent = ""
     short = "\n".join(getattr(agent, "short_memory", []) or [])
     return {"summary": summary, "recent": recent, "short": short}
-
 
 def render_memory_context(memory: Dict[str, str], labels: Optional[Dict[str, str]] = None) -> str:
     labels = labels or {"summary": "摘要记忆", "recent": "最近对话", "short": "短期记忆"}

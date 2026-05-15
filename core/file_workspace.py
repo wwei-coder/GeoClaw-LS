@@ -4,12 +4,12 @@ import os
 import re
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 class FileWorkspace:
     ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".txt", ".json"}

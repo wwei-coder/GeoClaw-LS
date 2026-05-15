@@ -47,6 +47,7 @@ tmp/
 temp/
 workspace/uploads/
 workspace/artifacts/
+workspace/files_index.json
 *.tmp
 *.bak
 *.swp

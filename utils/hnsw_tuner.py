@@ -4,7 +4,7 @@ import time
 import argparse
 from statistics import mean
 from storage.vector.vector_store import VectorStore
-from core.config import DATA_DIR
+from config_runtime import DATA_DIR
 
 def load_queries(path: str):
     if not path:
