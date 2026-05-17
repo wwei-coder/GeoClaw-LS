@@ -28,6 +28,7 @@ graph:
     replan_penalty_cap: 0.24
     replan_penalty_step: 0.08
   replan_max_attempts: 2
+  review_replan_max_attempts: 2
 keyword_rerank:
   stop_words:
   - 的
@@ -49,47 +50,22 @@ keyword_rerank:
   - 呢
   - 啊
 keywords:
-  analysis:
-  - 分析
-  - 预测
-  - 模型
-  - 数据
-  - csv
-  - xlsx
-  - 随机森林
-  - 深度学习
-  - 机器学习
-  - 导入
   complex:
   - 滑坡
-  - 地质
-  - 灾害
-  - 诱发
-  - 防治
-  - 监测
-  - 降雨
-  complex_calc:
-  - 公式
-  - 参数
-  - 系数
-  - 模型
-  - 依据
-  - 根据
-  - 查
-  - 资料
-  math:
-  - 计算
-  - 多少
-  - +
-  - '-'
-  - '*'
-  - /
-  - 加
-  - 减
-  - 乘
-  - 除
-  - 等于
-  - 几
+  - 崩塌
+  - 泥石流
+  - 地面塌陷
+  - 地裂缝
+  - 地质灾害
+  - 边坡
+  - 斜坡
+  - InSAR
+  - 形变
+  - 位移
+  - 易发性
+  - 稳定性
+  - 抗滑桩
+  - 锚索
   memory_query:
   - 我刚才
   - 刚才问
@@ -194,7 +170,6 @@ terminology:
   - - InSAR（热红外成像）
     - 干涉合成孔径雷达（InSAR）
 tool:
-  calculator_max_expression_len: 100
   discovery_top_k: 8
   rag_top_k: 4
 vector_search:

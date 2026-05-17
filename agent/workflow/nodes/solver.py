@@ -92,14 +92,21 @@ class SolverNode:
             len(state.get("sources", []) or []),
         )
         cb = getattr(self.core, "_current_stream_callback", None)
+        retrieval_chunks = list(state.get("active_retrieval_chunks", state.get("retrieval_chunks", [])) or [])
+        sources = list(state.get("active_sources", state.get("sources", [])) or [])
+        step_results = list(state.get("active_step_results", state.get("step_results", [])) or [])
+        revision_feedback = ""
+        if state.get("answer_revision_needed", False):
+            revision_feedback = str(state.get("feedback") or "").strip()
 
         brain = getattr(self.core, "brain", None)
         if brain is not None:
             payload = {
                 "question": state["question"],
-                "step_results": state["step_results"],
-                "kb_chunks": [],
-                "sources": state["sources"],
+                "step_results": step_results,
+                "kb_chunks": retrieval_chunks,
+                "sources": sources,
+                "revision_feedback": revision_feedback,
                 "canceled": False,
                 "stream_callback": cb,
                 "persist_memory": False,
@@ -116,9 +123,10 @@ class SolverNode:
             syn_res = await self._get_synthesis_fallback_adapter().ainvoke(
                 {
                     "question": state["question"],
-                    "step_results": state["step_results"],
-                    "kb_chunks": [],
-                    "sources": state["sources"],
+                    "step_results": step_results,
+                    "kb_chunks": retrieval_chunks,
+                    "sources": sources,
+                    "revision_feedback": revision_feedback,
                     "canceled": False,
                     "stream_callback": cb,
                     "persist_memory": False,
@@ -137,15 +145,16 @@ class SolverNode:
         remediation_metrics = self.collect_remediation_metrics_fn(
             task=task,
             state=state,
-            execution_trace=list(state.get("execution_trace", []) or []),
+            execution_trace=list(state.get("active_execution_trace", state.get("execution_trace", [])) or []),
             steps=task.steps,
         )
         evidence_assessment = self.assess_evidence_quality_fn(
             answer=synthesized_answer,
-            sources=list(state.get("sources", []) or []),
-            retrieval_chunks=list(state.get("retrieval_chunks", []) or []),
+            sources=sources,
+            retrieval_chunks=retrieval_chunks,
             need_evidence=bool((state.get("plan") or {}).get("need_evidence", state.get("need_kb", False))),
             confidence_label=confidence_label,
+            question=str(state.get("question") or ""),
         )
         metadata_update = self.build_task_metadata_update_fn(
             remediation_metrics=remediation_metrics,
@@ -154,8 +163,9 @@ class SolverNode:
         task.metadata["remediation_metrics"] = metadata_update["remediation_metrics"]
         task.metadata["evidence_quality_assessment"] = metadata_update["evidence_quality_assessment"]
         final_answer = self.append_evidence_summary_if_needed_fn(final_answer, evidence_assessment)
-        task.final_answer = final_answer
-        task.status = self.derive_task_status(task, final_answer)
+        task.metadata["draft_answer"] = final_answer
+        task.metadata["pending_final_status"] = self.derive_task_status(task, final_answer)
+        task.status = "running"
         task.touch()
         self.safe_save_task(task)
         self.logger.info(
@@ -165,13 +175,6 @@ class SolverNode:
             confidence_label,
             int((time.monotonic() - started) * 1000),
         )
-
-        store = getattr(self.core, "task_store", None)
-        if store:
-            try:
-                store.update_task_status(task.id, task.status, final_answer=final_answer)
-            except Exception as exc:
-                self.logger.warning(f"[TaskStore] 更新任务最终状态失败（已忽略）: {exc}")
 
         return self.build_solver_return_payload_fn(
             task=task.to_dict(),

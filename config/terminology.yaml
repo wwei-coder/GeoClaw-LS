@@ -1,0 +1,61 @@
+version: 1
+
+global:
+  allowed_english_words:
+    - InSAR
+    - SAR
+    - GNSS
+    - GPS
+    - DEM
+    - LiDAR
+    - AI
+    - RAG
+    - BM25
+    - RRF
+    - AutoML
+    - KG-RAG
+    - Python
+    - PyTorch
+
+terms:
+  - id: insar
+    canonical: InSAR
+    standard_name: 干涉合成孔径雷达
+    english_name: Interferometric Synthetic Aperture Radar
+    aliases:
+      - InSAR
+      - insar
+      - 干涉合成孔径雷达
+    required_in_answer: true
+    required_phrases:
+      - 干涉合成孔径雷达
+      - Interferometric Synthetic Aperture Radar
+    recommended_definition: InSAR 是干涉合成孔径雷达（Interferometric Synthetic Aperture Radar），通过多期 SAR 影像相位差获取地表形变信息，可用于地表形变和地质灾害监测。
+    forbidden_phrases:
+      - 热红外
+      - 室内扫描
+      - 地物成像
+      - 多光谱
+      - 光学
+      - 红外
+      - 地成学
+    replacements:
+      - old: 地成学（InSAR）
+        new: 干涉合成孔径雷达（InSAR）
+      - old: InSAR（地物成像技术）
+        new: 干涉合成孔径雷达（InSAR）
+      - old: InSAR（热红外成像）
+        new: 干涉合成孔径雷达（InSAR）
+
+  - id: landslide
+    canonical: 滑坡
+    standard_name: 滑坡
+    english_name: landslide
+    aliases:
+      - 滑坡
+      - landslide
+    required_in_answer: false
+    required_phrases: []
+    recommended_definition: 滑坡是斜坡上的岩体或土体在重力作用下，沿一定软弱面或软弱带整体向下滑动的现象或过程。
+    forbidden_phrases: []
+    replacements: []

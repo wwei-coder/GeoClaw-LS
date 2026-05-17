@@ -1,8 +1,11 @@
 from __future__ import annotations
 import json
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from config_runtime import SQLITE_LOCK_RETRY_ATTEMPTS, SQLITE_LOCK_RETRY_BASE_MS
 from utils.logger import logger
 from .state import AgentStep, AgentTask, Artifact
 
@@ -50,6 +53,42 @@ class TaskStore:
             return json.loads(raw)
         except Exception:
             return {}
+
+    def _is_locked_error(self, exc: Exception) -> bool:
+        if not isinstance(exc, sqlite3.OperationalError):
+            return False
+        message = str(exc).lower()
+        return "locked" in message or "busy" in message
+
+    def _lock_retry_sleep_seconds(self, attempt_index: int) -> float:
+        base_seconds = float(SQLITE_LOCK_RETRY_BASE_MS) / 1000.0
+        return base_seconds * (2 ** attempt_index)
+
+    def _run_write_with_retry(self, write_action, action_name: str) -> bool:
+        conn = self._connection()
+        last_exc: Optional[Exception] = None
+        for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                write_action(conn)
+                conn.commit()
+                return True
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if self._is_locked_error(exc) and attempt < SQLITE_LOCK_RETRY_ATTEMPTS - 1:
+                    sleep_seconds = self._lock_retry_sleep_seconds(attempt)
+                    logger.warning(
+                        f"[TaskStore] {action_name} 遇到 SQLite 锁冲突，"
+                        f"准备第 {attempt + 2} 次重试，等待 {sleep_seconds:.2f}s: {exc}"
+                    )
+                    time.sleep(sleep_seconds)
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         conn = self._connection()
@@ -133,79 +172,82 @@ class TaskStore:
     def save_task(self, task: AgentTask, session_id: Optional[Any] = None) -> None:
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO agent_tasks (id, session_id, user_query, status, run_mode, cancel_requested, resumed_from, final_answer, metadata_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        session_id = excluded.session_id,
-                        user_query = excluded.user_query,
-                        status = excluded.status,
-                        run_mode = excluded.run_mode,
-                        cancel_requested = excluded.cancel_requested,
-                        resumed_from = excluded.resumed_from,
-                        final_answer = excluded.final_answer,
-                        metadata_json = excluded.metadata_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        str(task.id),
-                        None if session_id is None else str(session_id),
-                        str(task.user_query or ""),
-                        str(task.status or "pending"),
-                        str(task.run_mode or "sync"),
-                        1 if task.cancel_requested else 0,
-                        task.resumed_from,
-                        str(task.final_answer or ""),
-                        self._safe_json_dumps(task.metadata or {}),
-                        str(task.created_at or ""),
-                        str(task.updated_at or ""),
-                    ),
-                )
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        INSERT INTO agent_tasks (id, session_id, user_query, status, run_mode, cancel_requested, resumed_from, final_answer, metadata_json, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            session_id = excluded.session_id,
+                            user_query = excluded.user_query,
+                            status = excluded.status,
+                            run_mode = excluded.run_mode,
+                            cancel_requested = excluded.cancel_requested,
+                            resumed_from = excluded.resumed_from,
+                            final_answer = excluded.final_answer,
+                            metadata_json = excluded.metadata_json,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            str(task.id),
+                            None if session_id is None else str(session_id),
+                            str(task.user_query or ""),
+                            str(task.status or "pending"),
+                            str(task.run_mode or "sync"),
+                            1 if task.cancel_requested else 0,
+                            task.resumed_from,
+                            str(task.final_answer or ""),
+                            self._safe_json_dumps(task.metadata or {}),
+                            str(task.created_at or ""),
+                            str(task.updated_at or ""),
+                        ),
+                    )
+
+                self._run_write_with_retry(_write, "保存任务")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 保存任务失败: {exc}")
 
     def update_task_status(self, task_id: str, status: str, final_answer: Optional[str] = None) -> None:
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                if final_answer is None:
-                    cur.execute(
-                        "UPDATE agent_tasks SET status = ?, updated_at = ? WHERE id = ?",
-                        (str(status), _iso_now(), str(task_id)),
-                    )
-                else:
-                    cur.execute(
-                        "UPDATE agent_tasks SET status = ?, final_answer = ?, updated_at = ? WHERE id = ?",
-                        (
-                            str(status),
-                            str(final_answer),
-                            _iso_now(),
-                            str(task_id),
-                        ),
-                    )
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    if final_answer is None:
+                        cur.execute(
+                            "UPDATE agent_tasks SET status = ?, updated_at = ? WHERE id = ?",
+                            (str(status), _iso_now(), str(task_id)),
+                        )
+                    else:
+                        cur.execute(
+                            "UPDATE agent_tasks SET status = ?, final_answer = ?, updated_at = ? WHERE id = ?",
+                            (
+                                str(status),
+                                str(final_answer),
+                                _iso_now(),
+                                str(task_id),
+                            ),
+                        )
+
+                self._run_write_with_retry(_write, "更新任务状态")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 更新任务状态失败: {exc}")
 
     def set_task_cancel_requested(self, task_id: str, cancel_requested: bool = True) -> None:
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute(
-                    "UPDATE agent_tasks SET cancel_requested = ?, updated_at = ? WHERE id = ?",
-                    (
-                        1 if cancel_requested else 0,
-                        _iso_now(),
-                        str(task_id),
-                    ),
-                )
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE agent_tasks SET cancel_requested = ?, updated_at = ? WHERE id = ?",
+                        (
+                            1 if cancel_requested else 0,
+                            _iso_now(),
+                            str(task_id),
+                        ),
+                    )
+
+                self._run_write_with_retry(_write, "更新取消标记")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 更新取消标记失败: {exc}")
 
@@ -214,57 +256,59 @@ class TaskStore:
             return
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute("DELETE FROM agent_steps WHERE task_id = ?", (str(task_id),))
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM agent_steps WHERE task_id = ?", (str(task_id),))
+
+                self._run_write_with_retry(_write, "清理任务步骤")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 清理任务步骤失败: {exc}")
 
     def save_step(self, task_id: str, step: AgentStep, position: int) -> None:
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO agent_steps (id, task_id, position, tool_name, instruction, status, retry_of, attempts, cancel_requested, input_json, result_json, error, started_at, finished_at, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        task_id = excluded.task_id,
-                        position = excluded.position,
-                        tool_name = excluded.tool_name,
-                        instruction = excluded.instruction,
-                        status = excluded.status,
-                        retry_of = excluded.retry_of,
-                        attempts = excluded.attempts,
-                        cancel_requested = excluded.cancel_requested,
-                        input_json = excluded.input_json,
-                        result_json = excluded.result_json,
-                        error = excluded.error,
-                        started_at = excluded.started_at,
-                        finished_at = excluded.finished_at,
-                        metadata_json = excluded.metadata_json
-                    """,
-                    (
-                        str(step.id),
-                        str(task_id),
-                        int(position),
-                        str(step.tool_name or ""),
-                        str(step.instruction or ""),
-                        str(step.status or "pending"),
-                        step.retry_of,
-                        int(step.attempts or 1),
-                        1 if step.cancel_requested else 0,
-                        self._safe_json_dumps(step.input or {}),
-                        self._safe_json_dumps(step.result or {}),
-                        step.error,
-                        step.started_at,
-                        step.finished_at,
-                        self._safe_json_dumps(step.metadata or {}),
-                    ),
-                )
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        INSERT INTO agent_steps (id, task_id, position, tool_name, instruction, status, retry_of, attempts, cancel_requested, input_json, result_json, error, started_at, finished_at, metadata_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            task_id = excluded.task_id,
+                            position = excluded.position,
+                            tool_name = excluded.tool_name,
+                            instruction = excluded.instruction,
+                            status = excluded.status,
+                            retry_of = excluded.retry_of,
+                            attempts = excluded.attempts,
+                            cancel_requested = excluded.cancel_requested,
+                            input_json = excluded.input_json,
+                            result_json = excluded.result_json,
+                            error = excluded.error,
+                            started_at = excluded.started_at,
+                            finished_at = excluded.finished_at,
+                            metadata_json = excluded.metadata_json
+                        """,
+                        (
+                            str(step.id),
+                            str(task_id),
+                            int(position),
+                            str(step.tool_name or ""),
+                            str(step.instruction or ""),
+                            str(step.status or "pending"),
+                            step.retry_of,
+                            int(step.attempts or 1),
+                            1 if step.cancel_requested else 0,
+                            self._safe_json_dumps(step.input or {}),
+                            self._safe_json_dumps(step.result or {}),
+                            step.error,
+                            step.started_at,
+                            step.finished_at,
+                            self._safe_json_dumps(step.metadata or {}),
+                        ),
+                    )
+
+                self._run_write_with_retry(_write, "保存步骤")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 保存步骤失败: {exc}")
 
@@ -272,35 +316,36 @@ class TaskStore:
         payload = artifact.to_dict() if hasattr(artifact, "to_dict") else dict(artifact or {})
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO agent_artifacts (id, task_id, name, type, path, url, mime_type, metadata_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        task_id = excluded.task_id,
-                        name = excluded.name,
-                        type = excluded.type,
-                        path = excluded.path,
-                        url = excluded.url,
-                        mime_type = excluded.mime_type,
-                        metadata_json = excluded.metadata_json,
-                        created_at = excluded.created_at
-                    """,
-                    (
-                        str(payload.get("id") or ""),
-                        str(task_id),
-                        str(payload.get("name") or "artifact"),
-                        str(payload.get("type") or payload.get("kind") or "text"),
-                        str(payload.get("path") or ""),
-                        str(payload.get("url") or ""),
-                        str(payload.get("mime_type") or ""),
-                        self._safe_json_dumps(payload.get("metadata") or {}),
-                        str(payload.get("created_at") or ""),
-                    ),
-                )
-                conn.commit()
+                def _write(conn: sqlite3.Connection) -> None:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        INSERT INTO agent_artifacts (id, task_id, name, type, path, url, mime_type, metadata_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            task_id = excluded.task_id,
+                            name = excluded.name,
+                            type = excluded.type,
+                            path = excluded.path,
+                            url = excluded.url,
+                            mime_type = excluded.mime_type,
+                            metadata_json = excluded.metadata_json,
+                            created_at = excluded.created_at
+                        """,
+                        (
+                            str(payload.get("id") or ""),
+                            str(task_id),
+                            str(payload.get("name") or "artifact"),
+                            str(payload.get("type") or payload.get("kind") or "text"),
+                            str(payload.get("path") or ""),
+                            str(payload.get("url") or ""),
+                            str(payload.get("mime_type") or ""),
+                            self._safe_json_dumps(payload.get("metadata") or {}),
+                            str(payload.get("created_at") or ""),
+                        ),
+                    )
+
+                self._run_write_with_retry(_write, "保存产物")
             except Exception as exc:
                 logger.warning(f"[TaskStore] 保存产物失败: {exc}")
 
@@ -541,30 +586,34 @@ class TaskStore:
         safe_status = interrupted_status if interrupted_status in {"partial", "failed"} else "partial"
         with self._lock():
             try:
-                conn = self._connection()
-                cur = conn.cursor()
-                cur.execute("SELECT id, metadata_json FROM agent_tasks WHERE status = 'running'")
-                rows = cur.fetchall() or []
                 updated = 0
-                for task_id, metadata_json in rows:
-                    metadata = self._safe_json_loads(metadata_json)
-                    metadata["interrupted"] = True
-                    metadata["interrupted_reason"] = "应用重启或进程中断，后台任务未能继续运行。"
-                    cur.execute(
-                        """
-                        UPDATE agent_tasks
-                        SET status = ?, cancel_requested = 0, metadata_json = ?, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            safe_status,
-                            self._safe_json_dumps(metadata),
-                            _iso_now(),
-                            str(task_id),
-                        ),
-                    )
-                    updated += 1
-                conn.commit()
+
+                def _write(conn: sqlite3.Connection) -> None:
+                    nonlocal updated
+                    cur = conn.cursor()
+                    cur.execute("SELECT id, metadata_json FROM agent_tasks WHERE status = 'running'")
+                    rows = cur.fetchall() or []
+                    updated = 0
+                    for task_id, metadata_json in rows:
+                        metadata = self._safe_json_loads(metadata_json)
+                        metadata["interrupted"] = True
+                        metadata["interrupted_reason"] = "应用重启或进程中断，后台任务未能继续运行。"
+                        cur.execute(
+                            """
+                            UPDATE agent_tasks
+                            SET status = ?, cancel_requested = 0, metadata_json = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                safe_status,
+                                self._safe_json_dumps(metadata),
+                                _iso_now(),
+                                str(task_id),
+                            ),
+                        )
+                        updated += 1
+
+                self._run_write_with_retry(_write, "标记中断任务")
                 return updated
             except Exception as exc:
                 logger.warning(f"[TaskStore] 标记中断任务失败: {exc}")

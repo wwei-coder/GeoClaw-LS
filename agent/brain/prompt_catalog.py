@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import yaml
 import config_runtime as core_config
-from tools.registry import render_planner_tool_descriptions
+from tools.tool_catalog import render_planner_tool_descriptions
 
 @dataclass
 class PromptDefinition:
@@ -74,9 +74,11 @@ class BrainPromptCatalog:
             required_inputs: List[str],
             output_contract: str,
             source_name: str = "config/prompts.yaml",
+            template_override: Optional[str] = None,
+            source_override: Optional[str] = None,
         ) -> None:
-            template = self._require_prompt_template(yaml_key)
-            source = f"{source_name}:prompts.{yaml_key}"
+            template = template_override if template_override is not None else self._require_prompt_template(yaml_key)
+            source = source_override if source_override is not None else f"{source_name}:prompts.{yaml_key}"
             self._defs[prompt_id] = PromptDefinition(
                 prompt_id=prompt_id,
                 version=version,
@@ -108,7 +110,14 @@ class BrainPromptCatalog:
             yaml_key="final_answer",
             version="v1",
             description="最终回答综合提示词，强调资料支持边界与引用约束。",
-            required_inputs=["question", "step_results", "kb_evidence"],
+            required_inputs=[
+                "question",
+                "step_results",
+                "kb_evidence",
+                "user_preferences",
+                "revision_feedback",
+                "terminology_constraints",
+            ],
             output_contract="中文专业回答；按问题复杂度自适应结构；清楚区分资料依据、资料未提及和必要推断，禁止伪造证据。",
         )
         add_prompt(
@@ -119,6 +128,8 @@ class BrainPromptCatalog:
             required_inputs=["question"],
             output_contract="输出单行改写查询，不附加解释。",
         )
+        keyword_expansion_template = self._require_prompt_template("keyword_expansion")
+
         add_prompt(
             prompt_id="keyword_expansion",
             yaml_key="keyword_expansion",
@@ -126,6 +137,7 @@ class BrainPromptCatalog:
             description="检索关键词扩展提示词。",
             required_inputs=["question"],
             output_contract="输出关键词文本，用于检索扩展。",
+            template_override=keyword_expansion_template,
         )
         add_prompt(
             prompt_id="query_expansion",
@@ -134,6 +146,8 @@ class BrainPromptCatalog:
             description="兼容保留的检索关键词扩展提示词。",
             required_inputs=["question"],
             output_contract="输出关键词文本；当前主检索链路优先使用 keyword_expansion。",
+            template_override=self._build_query_expansion_template(keyword_expansion_template),
+            source_override="config/prompts.yaml:prompts.keyword_expansion(query_expansion compat)",
         )
         add_prompt(
             prompt_id="metadata_filter",
@@ -163,9 +177,9 @@ class BrainPromptCatalog:
             prompt_id="rewrite",
             yaml_key="rewrite",
             version="v1",
-            description="滑坡防治领域术语规范化提示词。",
+            description="地质灾害与工程地质领域术语规范化提示词。",
             required_inputs=["text"],
-            output_contract="输出滑坡防治语境下术语规范化后的文本；允许保留必要英文缩写、模型名、算法名和专有名词。",
+            output_contract="输出地质灾害与工程地质语境下术语规范化后的文本；允许保留必要英文缩写、模型名、算法名和专有名词。",
         )
         add_prompt(
             prompt_id="fix_insar",
@@ -174,6 +188,14 @@ class BrainPromptCatalog:
             description="InSAR 术语与领域边界修正提示词。",
             required_inputs=["question", "answer"],
             output_contract="InSAR 必须解释为干涉合成孔径雷达，禁止错误映射到热红外/光学。",
+        )
+        add_prompt(
+            prompt_id="fix_terminology_concepts",
+            yaml_key="fix_terminology_concepts",
+            version="v1",
+            description="通用强定义术语修正提示词。",
+            required_inputs=["question", "answer", "terminology_constraints", "violations"],
+            output_contract="只修正术语定义和禁用误释，保持原回答结构和事实边界。",
         )
         add_prompt(
             prompt_id="discovery",
@@ -204,6 +226,16 @@ class BrainPromptCatalog:
         if value:
             return value
         raise ValueError(f"[PromptCatalog] config/prompts.yaml 缺少必需 prompts.{key}")
+
+    def _build_query_expansion_template(self, keyword_template: str) -> str:
+        template = keyword_template
+        for old in (
+            "1. 提取 1-3 个关键词；短问题可 1-2 个。",
+            "1. 提取 2-3 个关键词；短问题可 1-2 个。",
+            "1. 提取 2-4 个关键词；短问题可 1-2 个。",
+        ):
+            template = template.replace(old, "1. 提取 3-5 个关键词；短问题可 2-4 个。", 1)
+        return template
 
     def _inject_tool_descriptions(self, template: str) -> str:
         dynamic_tools = render_planner_tool_descriptions()

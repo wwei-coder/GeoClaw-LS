@@ -87,6 +87,7 @@ class LLMBrain:
         step_results: list,
         kb_chunks: list,
         sources: list,
+        revision_feedback: str = "",
         canceled: bool = False,
         stream_callback: Any = None,
         persist_memory: bool = True,
@@ -96,6 +97,7 @@ class LLMBrain:
             "step_results": list(step_results or []),
             "kb_chunks": list(kb_chunks or []),
             "sources": list(sources or []),
+            "revision_feedback": str(revision_feedback or ""),
             "canceled": bool(canceled),
             "stream_callback": stream_callback,
         }
@@ -108,9 +110,6 @@ class LLMBrain:
         )
 
     async def review(self, *, question: str, answer: str, review_count: int = 0) -> BrainReview:
-        if review_count >= 2:
-            return BrainReview(is_satisfactory=True, feedback="", review_count=review_count)
-
         prompt = self.prompt_catalog.render("reviewer", question=question, answer=answer)
         try:
             raw = (await self._review_llm_call(prompt)).strip()

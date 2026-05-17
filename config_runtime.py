@@ -14,6 +14,7 @@ FINGERPRINT_PATH = os.path.join(BASE_DIR, "doc_fingerprint.json")
 CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 PROMPTS_PATH = os.path.join(BASE_DIR, "config", "prompts.yaml")
 PLANNER_PATH = os.path.join(BASE_DIR, "config", "planner.yaml")
+TERMINOLOGY_PATH = os.path.join(BASE_DIR, "config", "terminology.yaml")
 
 def load_yaml(path):
     if os.path.exists(path):
@@ -87,6 +88,28 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", get_config("models.ollama.model", "deep
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", get_config("models.ollama.temperature", 0.7)))
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", get_config("models.ollama.timeout", 60)))
 OLLAMA_STREAM_TIMEOUT = int(os.getenv("OLLAMA_STREAM_TIMEOUT", get_config("models.ollama.stream_timeout", 120)))
+OLLAMA_CONNECT_TIMEOUT = float(
+    os.getenv(
+        "OLLAMA_CONNECT_TIMEOUT",
+        get_config("models.ollama.connect_timeout", min(10, OLLAMA_TIMEOUT)),
+    )
+)
+OLLAMA_STREAM_CONNECT_TIMEOUT = float(
+    os.getenv(
+        "OLLAMA_STREAM_CONNECT_TIMEOUT",
+        get_config("models.ollama.stream_connect_timeout", OLLAMA_CONNECT_TIMEOUT),
+    )
+)
+
+LLM_RETRY_MAX_ATTEMPTS = max(1, int(get_config("llm.retry.max_attempts", 2)))
+LLM_RETRY_BACKOFF_BASE = float(get_config("llm.retry.backoff_base", 0.6))
+LLM_RETRY_BACKOFF_JITTER = max(0.0, float(get_config("llm.retry.backoff_jitter", 0.2)))
+
+SQLITE_BUSY_TIMEOUT_MS = max(0, int(get_config("storage.sqlite.busy_timeout_ms", 3000)))
+SQLITE_JOURNAL_MODE = str(get_config("storage.sqlite.journal_mode", "WAL")).strip().upper()
+SQLITE_SYNCHRONOUS = str(get_config("storage.sqlite.synchronous", "NORMAL")).strip().upper()
+SQLITE_LOCK_RETRY_ATTEMPTS = max(1, int(get_config("storage.sqlite.lock_retry_attempts", 3)))
+SQLITE_LOCK_RETRY_BASE_MS = max(0, int(get_config("storage.sqlite.lock_retry_base_ms", 120)))
 
 # Vector Store Configuration
 VECTOR_COLLECTION_NAME = get_config("rag.vector_collection_name", "knowledge_base")
@@ -104,7 +127,6 @@ RERANK_MODEL_NAME = get_config("models.rerank", "BAAI/bge-reranker-base")
 
 TOOL_RAG_TOP_K = int(get_config("tool.rag_top_k", VECTOR_SEARCH_TOP_K))
 TOOL_DISCOVERY_TOP_K = int(get_config("tool.discovery_top_k", RAG_EXPANSION_TOP_K))
-CALCULATOR_MAX_EXPRESSION_LEN = int(get_config("tool.calculator_max_expression_len", 100))
 SYNTHESIS_MAX_EVIDENCE_CHARS = int(get_config("synthesis.max_evidence_chars", 800))
 
 LLM_TEMPERATURE_KEYWORD_EXPANSION = float(get_config("llm.temperatures.keyword_expansion", 0.1))
@@ -118,6 +140,7 @@ GRAPH_REPLAN_MAX_ATTEMPTS = int(get_config("graph.replan_max_attempts", 2))
 GRAPH_REPLAN_ON_LOW_QUALITY = to_bool(get_config("graph.replan_on_low_quality", True), True)
 GRAPH_REPLAN_LOW_QUALITY_THRESHOLD = float(get_config("graph.replan_low_quality_threshold", 0.3))
 GRAPH_REPLAN_REQUIRE_EXPANSION = to_bool(get_config("graph.replan_require_expansion", True), True)
+GRAPH_REVIEW_REPLAN_MAX_ATTEMPTS = int(get_config("graph.review_replan_max_attempts", 2))
 GRAPH_STEP_RESULT_MAX_CHARS = int(get_config("graph.step_result_max_chars", 9000))
 ANSWER_CONFIDENCE_HIGH_THRESHOLD = float(get_config("graph.answer_confidence.high_threshold", 0.75))
 ANSWER_CONFIDENCE_MEDIUM_THRESHOLD = float(get_config("graph.answer_confidence.medium_threshold", 0.45))
@@ -178,7 +201,26 @@ MAX_CONTEXT_LEN = get_config("agent.max_context_len", 12000)
 MAX_HISTORY_ROUNDS = get_config("agent.max_history_rounds", 8)
 
 # Keywords & Rules
-COMPLEX_KEYWORDS = get_config("keywords.complex", ["滑坡", "地质", "灾害", "诱发", "防治", "监测", "降雨"])
+COMPLEX_KEYWORDS = get_config(
+    "keywords.complex",
+    [
+        "滑坡",
+        "崩塌",
+        "泥石流",
+        "地面塌陷",
+        "地裂缝",
+        "地质灾害",
+        "边坡",
+        "斜坡",
+        "InSAR",
+        "形变",
+        "位移",
+        "易发性",
+        "稳定性",
+        "抗滑桩",
+        "锚索",
+    ],
+)
 
 # Sets
 SMALL_TALK_KEYWORDS = set(get_config("keywords.small_talk", {"在吗", "你是谁", "你好", "hi", "hello", "unknown", "未知"}))
@@ -210,9 +252,6 @@ MEMORY_QUERY_KEYWORDS = set(
     )
 )
 
-MATH_KEYWORDS = get_config("keywords.math", ["计算", "多少", "+", "-", "*", "/", "加", "减", "乘", "除", "等于", "几"])
-ANALYSIS_KEYWORDS = get_config("keywords.analysis", ["分析", "预测", "模型", "数据", "csv", "xlsx", "随机森林", "深度学习", "机器学习", "导入"])
-COMPLEX_CALC_KEYWORDS = get_config("keywords.complex_calc", ["公式", "参数", "系数", "模型", "依据", "根据", "查", "资料"])
 
 # Terminology Fixes
 _replacements_raw = get_config("terminology.replacements", [])
@@ -247,21 +286,13 @@ if not _planner_task_prompt:
     # Fallback to prompts.yaml if not in planner.yaml
     _planner_task_prompt = PROMPTS.get("planner_task")
 
-PLANNER_PROMPT = (
-    _planner_task_prompt
-    if _planner_task_prompt
-    else """
-你是一个 Tool Agent 的 Planner。
+DEFAULT_PLANNER_PROMPT = """
+你是 GeoClaw-LS 的任务规划器（Planner）。
 
-请将用户问题拆解为【步骤】，并为每一步选择最合适的工具：
-可选工具：
-- RAG（知识库检索）
-- MEMORY（历史记忆）
-- CALCULATOR（数学计算）
-- DISCOVERY（深度洞察与新知推导）
-- LLM（直接生成）
+请将用户问题拆解为可执行【步骤】，并为每一步选择最合适的工具。
+允许工具集合与工具说明由运行时注入的工具目录提供；不要在输出中重复工具说明。
 
-只输出 JSON，不要解释。
+只输出 JSON，不要解释、不要 Markdown 代码块、不要额外前后缀文本。
 
 JSON 格式：
 {{
@@ -270,20 +301,26 @@ JSON 格式：
   "steps": [
     {{
       "task": "要做什么（给工具的输入）",
-      "tool": "RAG / MEMORY / LLM / CALCULATOR / DISCOVERY"
+      "tool": "从当前允许工具集合中选择一个工具名"
     }}
   ]
 }}
 
 规则：
-- 若问题涉及具体事实、论文/报告内容、定义/数据、需要引用资料，请将 need_kb 设为 true，并在 steps 里包含至少一步 RAG。
-- 若问题是对先前对话的承接/追问（如“那…/刚才说的…/继续/再解释…”），请在 steps 中优先加入 MEMORY，用于提取相关上下文，再决定是否需要 RAG。
-- 若问题是在询问对话本身（如“我刚才问了什么/你刚才说了什么/复述/回顾/总结我们刚才聊了什么/上次说了什么”），请使用 MEMORY（可直接一步 MEMORY），need_kb 设为 false。
-- 若问题包含具体的数学算式（如“计算...”、“...等于多少”），请在 steps 中使用 CALCULATOR。
-- 若用户明确要求“推导”、“分析”、“新发现”、“盲点”、“潜在规律”、“未知关联”或“深度洞察”，请务必使用 DISCOVERY，并将 need_kb 设为 true.
-- 若主要是闲聊或纯创作且无需资料，need_kb 设为 false。
+- steps 必须是数组，且至少 1 步。
+- 每步必须包含 task、tool，task 需要具体可执行。
+- tool 必须从当前允许工具集合中选择，不要自造工具名。
+- 若问题涉及具体事实、论文/报告内容、定义/数据或需要引用资料，请将 need_kb 设为 true。
+- 若问题是在追问上文或请求回顾对话，请优先考虑需要历史上下文的工具。
+- 当前 Agent 不再提供专用计算工具；涉及简单计算或数学表达式时，优先规划为直接回答。
+- 不允许输出完整思考过程、隐藏推理或链式思考字段。
 
 用户问题：
 {question}
 """
+
+PLANNER_PROMPT = (
+    _planner_task_prompt
+    if _planner_task_prompt
+    else DEFAULT_PLANNER_PROMPT
 )

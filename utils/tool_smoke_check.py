@@ -12,12 +12,14 @@ class _WorkspaceNoFile:
     uploads_dir = Path("workspace/uploads").resolve()
 
     def resolve_file_from_query(self, query: str, fallback_file_id=None):  # noqa: D401
+        _ = (query, fallback_file_id)
         return None
 
 class _WorkspaceUnsafePath:
     uploads_dir = Path("workspace/uploads").resolve()
 
     def resolve_file_from_query(self, query: str, fallback_file_id=None):  # noqa: D401
+        _ = (query, fallback_file_id)
         return {
             "file_id": "file_x",
             "original_name": "unsafe.csv",
@@ -41,9 +43,6 @@ def _assert(condition: bool, msg: str, failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     registry = get_tool_registry()
-
-    calc = execute_tool("CALCULATOR", "1+2*3", _AgentStub(), registry=registry)
-    _assert(calc.success and "[计算器]" in calc.content and "= 7" in calc.content, "计算器表达式", failures)
 
     unknown = execute_tool("UNKNOWN_TOOL", "x", _AgentStub(), registry=registry)
     _assert((not unknown.success) and "未知工具" in str(unknown.error or ""), "未知工具处理", failures)

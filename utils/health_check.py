@@ -1,5 +1,6 @@
 import importlib
 import os
+import sqlite3
 import sys
 from typing import Iterable, List, Sequence, Tuple
 
@@ -9,16 +10,12 @@ if PROJECT_ROOT not in sys.path:
 
 from utils.logger import logger
 from config_runtime import (
-    CONFIG_PATH,
-    DATA_DIR,
     DB_PATH,
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_BACKEND,
     FINGERPRINT_PATH,
     LLM_PROVIDER,
     OLLAMA_URL,
-    PLANNER_PATH,
-    PROMPTS_PATH,
     VECTOR_DB_PATH,
 )
 
@@ -43,7 +40,6 @@ def check_import(module_name: str, desc: str, pip_hint: str | None = None) -> bo
         logger.error(f"❌ 依赖导入失败: {desc} ({module_name}) -> {exc}{hint}")
         return False
 
-
 def collect_boundary_paths() -> List[Tuple[str, str]]:
     return [
         ("api", "API 路由层目录"),
@@ -63,7 +59,6 @@ def collect_boundary_paths() -> List[Tuple[str, str]]:
         ("data", "知识库目录"),
     ]
 
-
 def _join_project_path(relative_path: str) -> str:
     return os.path.join(PROJECT_ROOT, relative_path.replace("/", os.sep))
 
@@ -76,7 +71,6 @@ def _build_optional_status_checks() -> List[Tuple[str, str]]:
         (FINGERPRINT_PATH, "doc_fingerprint.json 指纹文件"),
     ]
 
-
 def _check_optional_runtime_state(paths: Iterable[Tuple[str, str]]) -> None:
     logger.info("[正在检查运行数据状态（只读，不修改）...]")
     for path, desc in paths:
@@ -84,7 +78,6 @@ def _check_optional_runtime_state(paths: Iterable[Tuple[str, str]]) -> None:
             logger.info(f"✅ {desc} 已存在: {path}")
         else:
             logger.warning(f"⚠️ {desc} 当前不存在: {path}（首次运行或尚未生成时可接受）")
-
 
 def _check_local_embedding_model() -> bool:
     if EMBEDDING_BACKEND != "sentence_transformers":
@@ -94,7 +87,6 @@ def _check_local_embedding_model() -> bool:
         return True
     logger.warning("⚠️ 本地嵌入模型缺失；若当前环境依赖 sentence-transformers，本项属于真实故障")
     return False
-
 
 def _build_dependency_checks() -> Sequence[Tuple[str, str]]:
     checks: List[Tuple[str, str]] = [
@@ -111,7 +103,6 @@ def _build_dependency_checks() -> Sequence[Tuple[str, str]]:
     if EMBEDDING_BACKEND == "sentence_transformers":
         checks.append(("sentence_transformers", "Embedding 模型"))
     return checks
-
 
 def _check_runtime_config_import() -> bool:
     logger.info("[正在检查 config_runtime 关键常量...]")
@@ -207,13 +198,36 @@ def _check_llm_config_and_optional_probe() -> bool:
         logger.warning(f"⚠️ Ollama 当前不可访问: {exc}（环境提示，不视为结构故障）")
     return True
 
+
+def _check_sqlite_runtime_pragmas() -> bool:
+    logger.info("[正在检查 SQLite 运行时 PRAGMA...]")
+    if not os.path.exists(DB_PATH):
+        logger.warning("⚠️ SQLite 数据库文件当前不存在，跳过 PRAGMA 检查（首次运行时可接受）")
+        return True
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=1.0)
+        try:
+            pragmas = {}
+            for name in ("busy_timeout", "journal_mode", "synchronous"):
+                row = conn.execute(f"PRAGMA {name}").fetchone()
+                pragmas[name] = row[0] if row else None
+            logger.info(
+                "✅ SQLite PRAGMA 可读: "
+                f"busy_timeout={pragmas['busy_timeout']}, "
+                f"journal_mode={pragmas['journal_mode']}, "
+                f"synchronous={pragmas['synchronous']}"
+            )
+            return True
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(f"⚠️ SQLite PRAGMA 检查失败: {exc}（环境提示，不视为结构故障）")
+        return True
+
 def run_health_check() -> bool:
     logger.info("====== 开始系统完整性检查 ======")
     logger.info(f"🐍 Python 解释器路径: {sys.executable}")
     logger.info(f"🐍 Python 版本: {sys.version.split()[0]}")
-
-    if PROJECT_ROOT not in sys.path:
-        sys.path.append(PROJECT_ROOT)
 
     all_ok = True
 
@@ -243,6 +257,8 @@ def run_health_check() -> bool:
     if not _check_local_embedding_model():
         all_ok = False
     if not _check_llm_config_and_optional_probe():
+        all_ok = False
+    if not _check_sqlite_runtime_pragmas():
         all_ok = False
 
     logger.info("====== 检查结束 ======")

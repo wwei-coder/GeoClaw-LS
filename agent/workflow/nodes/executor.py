@@ -121,6 +121,12 @@ class ExecutorNode:
         chunks = []
         quality = {}
         quality_score = state.get("retrieval_quality_score", 0.0)
+        active_step_results = list(state.get("active_step_results", state.get("step_results", [])) or [])
+        active_tool_results = list(state.get("active_tool_results_v2", []) or [])
+        active_execution_trace = list(state.get("active_execution_trace", state.get("execution_trace", [])) or [])
+        active_artifacts = list(state.get("active_artifacts", state.get("artifacts", [])) or [])
+        active_sources = list(state.get("active_sources", state.get("sources", [])) or [])
+        active_retrieval_chunks = list(state.get("active_retrieval_chunks", state.get("retrieval_chunks", [])) or [])
         remediation_count = int(state.get("remediation_count", 0) or 0)
         remediation_stats = dict(state.get("remediation_stats") or {})
         unresolved_outcomes = list(state.get("unresolved_outcomes", []) or [])
@@ -194,6 +200,9 @@ class ExecutorNode:
             tool_result=tool_result,
             artifacts=normalized_artifacts,
         )
+        next_active_tool_results = active_tool_results + list(step_payload.get("tool_results_v2", []) or [])
+        next_active_execution_trace = active_execution_trace + list(step_payload.get("execution_trace", []) or [])
+        next_active_artifacts = active_artifacts + list(normalized_artifacts or [])
 
         action = dict(decision_payload.get("action") or {})
         action_type = str(action.get("action_type") or "none")
@@ -244,6 +253,14 @@ class ExecutorNode:
                     remediation_count=remediation_count,
                     remediation_stats=remediation_stats,
                     unresolved_outcomes=unresolved_outcomes,
+                    active_step_results=active_step_results + [
+                        f"[{tool}] {instruction}：\n{self.truncate_step_result(result_text)}"
+                    ],
+                    active_tool_results_v2=next_active_tool_results,
+                    active_execution_trace=next_active_execution_trace,
+                    active_artifacts=next_active_artifacts,
+                    active_sources=list(dict.fromkeys(active_sources + new_sources)),
+                    active_retrieval_chunks=active_retrieval_chunks + (chunks if tool == "RAG" else []),
                 )
             if action_allowed and action_type == "replan":
                 step_counts = dict(remediation_stats.get("step_remediation_counts") or {})
@@ -264,6 +281,12 @@ class ExecutorNode:
                     remediation_count=remediation_count,
                     remediation_stats=remediation_stats,
                     unresolved_outcomes=unresolved_outcomes,
+                    active_step_results=[],
+                    active_tool_results_v2=[],
+                    active_execution_trace=[],
+                    active_artifacts=[],
+                    active_sources=[],
+                    active_retrieval_chunks=[],
                 )
             if action_type in {"ask_user", "degrade_answer"}:
                 suppress_default_replan = True
@@ -319,6 +342,12 @@ class ExecutorNode:
                                 f"avg_similarity={quality.get('avg_similarity', 0)}。请改用其他检索策略或工具。"
                             ),
                             trace=["RAG low-quality, triggering replan"],
+                            active_step_results=[],
+                            active_tool_results_v2=[],
+                            active_execution_trace=[],
+                            active_artifacts=[],
+                            active_sources=[],
+                            active_retrieval_chunks=[],
                         )
             elif has_rag_content:
                 self.stream_thought("> [结果] 找到可用资料\n")
@@ -332,6 +361,12 @@ class ExecutorNode:
                     retrieval_quality_detail=quality,
                     feedback=f"步骤 {idx+1} [RAG] 未找到任何相关资料，请尝试使用搜索引擎或其他工具。",
                     trace=["RAG failed, triggering replan"],
+                    active_step_results=[],
+                    active_tool_results_v2=[],
+                    active_execution_trace=[],
+                    active_artifacts=[],
+                    active_sources=[],
+                    active_retrieval_chunks=[],
                 )
         else:
             if issue_type == "missing_file":
@@ -357,6 +392,12 @@ class ExecutorNode:
                     execution_replan_count=state.get("execution_replan_count", 0) + 1,
                     feedback=f"步骤 {idx+1} [{tool}] 执行失败：{result_text or tool_result.error}。请尝试其他方法。",
                     trace=[f"{tool} failed, triggering replan"],
+                    active_step_results=[],
+                    active_tool_results_v2=[],
+                    active_execution_trace=[],
+                    active_artifacts=[],
+                    active_sources=[],
+                    active_retrieval_chunks=[],
                 )
             self.stream_thought("> [结果] 执行完成\n")
 
@@ -393,4 +434,10 @@ class ExecutorNode:
             remediation_count=remediation_count,
             remediation_stats=remediation_stats,
             unresolved_outcomes=unresolved_outcomes,
+            active_step_results=active_step_results + [step_record],
+            active_tool_results_v2=next_active_tool_results,
+            active_execution_trace=next_active_execution_trace,
+            active_artifacts=next_active_artifacts,
+            active_sources=list(dict.fromkeys(active_sources + new_sources)),
+            active_retrieval_chunks=active_retrieval_chunks + (chunks if tool == "RAG" else []),
         )

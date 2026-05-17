@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from typing import Any, Callable, Dict, List
-
 from agent.brain.decision_adapter import DecisionAdapter
 from utils.logger import logger as default_logger
-
 
 def _first_file_id(state: Dict[str, Any]) -> str:
     file_id = str(state.get("file_id") or "").strip()
@@ -17,7 +14,6 @@ def _first_file_id(state: Dict[str, Any]) -> str:
         if candidate:
             return candidate
     return ""
-
 
 def _append_file_id(task: str, file_id: str) -> str:
     if not file_id:
@@ -36,7 +32,6 @@ def _missing_file_context_step(question: str) -> Dict[str, Any]:
         ),
         "reason": "文件分析缺少 file_id，先请求用户补充。",
     }
-
 
 class DecisionNode:
     def __init__(
@@ -92,10 +87,7 @@ class DecisionNode:
             trace_text = res.get("trace", "Decision: Done")
         current_steps = list(state["steps"])
 
-        if force_tool == "CALCULATOR":
-            if not any(s["tool"] == "CALCULATOR" for s in current_steps):
-                current_steps = [{"tool": "CALCULATOR", "task": state["question"]}]
-        elif final_use_kb and not any(s["tool"] == "RAG" for s in current_steps):
+        if final_use_kb and not any(s["tool"] == "RAG" for s in current_steps):
             current_steps.insert(0, {"tool": "RAG", "task": state["question"]})
 
         if self.is_data_analysis_request(state["question"], state.get("file_id", "")):

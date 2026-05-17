@@ -348,11 +348,16 @@ class VectorStore:
         metadatas = []
 
         for c in new_chunks:
+            parent_idx = c.get("parent_idx", -1)
+            child_idx = c.get("child_idx", -1)
             meta = {
                 "doc_name": c.get("doc_name", "unknown"),
                 "page_num": c.get("page_num", 0),
                 "type": c.get("type", "knowledge"),
                 "section_idx": c.get("section_idx", -1),
+                "section_title": c.get("section_title", ""),
+                "parent_idx": int(parent_idx if parent_idx is not None else -1),
+                "child_idx": int(child_idx if child_idx is not None else -1),
                 "parent_id": c.get("parent_id", ""),
                 "parent_content": c.get("parent_content", ""),
                 "active": True,
@@ -451,6 +456,9 @@ class VectorStore:
                 "content": doc_text,
                 "metadata": meta,
                 "doc_name": meta.get("doc_name", ""),
+                "page_num": meta.get("page_num", 0),
+                "section_idx": meta.get("section_idx", -1),
+                "section_title": meta.get("section_title", ""),
                 "parent_content": meta.get("parent_content", ""),
                 "distance": dist,
                 "score": 1.0 / (1.0 + dist),
@@ -489,6 +497,9 @@ class VectorStore:
                 c["content"] = doc
                 c["metadata"] = meta
                 c["doc_name"] = meta.get("doc_name", "")
+                c["page_num"] = meta.get("page_num", 0)
+                c["section_idx"] = meta.get("section_idx", -1)
+                c["section_title"] = meta.get("section_title", "")
                 c["parent_content"] = meta.get("parent_content", "")
                 final_candidates.append(c)
 

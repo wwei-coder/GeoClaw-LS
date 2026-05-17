@@ -39,15 +39,17 @@ GeoClaw-LS 是一个面向地质滑坡防治领域的本地智能助手。项目
 - `core/reset_handler.py`
 
 不要把 Brain、Planner、Config、Classifier、Tool Registry 等事实源重新塞回 `core/`。
+- `core/agent_core.py` 当前定位是 composition root / runtime facade；`core/graph_agent.py` 当前定位是 LangGraph wiring facade。后续若继续收口，应优先把状态与路由语义下沉到 `agent/workflow/`，而不是在 `core/` 扩张新业务逻辑。
 
 ## Git 与工作区规则
 
 - 本仓库允许存在未提交改动；不要误删、回滚或清理用户改动。
-- 当前本地扫描时间：2026-05-15。
+- 当前本地扫描时间：2026-05-16。
 - 当前工作区存在大量未提交改动和新增文件，涉及 `.gitignore`、`AGENTS.md`、`app.py`、`config_runtime.py`、`agent/`、`api/`、`capabilities/`、`core/`、`services/`、`storage/`、`tools/`、`utils/`、`static/` 等。
+- 本次扫描确认的新增或重点变更包括：`config/terminology.yaml`、`agent/policies/relevance.py`、`tools/tool_catalog.py`、`data/` 下新增的地质灾害大模型与滑坡识别 PDF，以及已删除的 `tools/calculator_tool.py`。
 - `docs/` 和 `tests/` 仅作为本地资料/验证目录保留，不上传 GitHub；它们已被 `.gitignore` 忽略。
 - `workspace/` 是本地运行目录；不要手动清理上传文件、产物或 `files_index.json`，除非任务明确要求。
-- 当前根目录未显示 `vector_db/`、`long_term_memory.db`、`doc_fingerprint.json`、`.need_reset` 等运行数据文件；这些文件可能由应用运行生成，若存在也不应手动改写或删除。
+- 当前根目录可见 `vector_db/`、`long_term_memory.db`、`doc_fingerprint.json` 等本地运行数据；这些文件已被 `.gitignore` 覆盖，不应手动改写、删除或上传。
 - 禁止使用 `git reset --hard`、批量 checkout 或破坏性清理来处理工作区差异。
 
 ## 技术栈
@@ -102,17 +104,17 @@ python utils\tool_smoke_check.py
 - `api/`：HTTP 路由层，负责请求校验、错误映射和响应返回。
 - `services/`：业务服务层，封装 Agent、Session、Task、File、Config、KnowledgeBase、Observability 等服务，并包含 `config_io.py`、`config_metadata.py`、`config_support.py`、`serializers.py`。
 - `core/`：运行总线和基础设施门面，只保留 AgentCore、GraphAgent、FileWorkspace、ResetHandler 及 facade。
-- `agent/brain/`：推理门面，包含 planner、decision、smalltalk、synthesis、memory query adapter、context judge、question classifier、terminology、prompt catalog 和 schema。
+- `agent/brain/`：推理门面，包含 planner、decision、smalltalk、synthesis、memory query adapter、context judge、question classifier、terminology、prompt catalog 和 schema；负责提示词组织、LLM 调用与回答后处理 helper，不执行工具、不做数据库持久化。
 - `agent/workflow/`：LangGraph 节点和 helper，包括 planner/decision/executor/solver/reviewer、条件路由、取消、补救、solver 输出和状态适配。
-- `agent/policies/`：纯规则策略，不能调用 LLM、不能做 I/O。
+- `agent/policies/`：纯规则策略，不能调用 LLM、不能做 I/O；当前包含回答要求、可信度、补救状态、任务状态和回答相关性检查等规则。
 - `agent/runtime/`：GraphRuntime、RuntimePersistence 和 request context。
 - `agent/executor.py`：标准工具执行器和工具闭环评估。
 - `capabilities/`：业务能力边界，当前包含 RAG、Memory、KG-RAG 骨架、AutoML 占位。
 - `storage/`：SQLite、artifact、vector、graph 存储适配器。
-- `tools/`：标准工具协议和统一工具注册。
+- `tools/`：标准工具协议、统一工具注册、Planner 可见工具目录和薄 wrapper；RAG、Memory、KG-RAG、AutoML 等业务能力实现应保留在 `capabilities/`，由 capability 暴露工具入口。
 - `static/`：原生 WebUI。
-- `config/`：运行配置与提示词。
-- `data/`：知识库源文档，当前包含 2 个 PDF 和 1 个 DOCX。
+- `config/`：运行配置、提示词、Planner 配置和术语配置。
+- `data/`：知识库源文档，当前包含 4 个 PDF 和 1 个 DOCX。
 - `docs/`：本地文档资料，不上传 GitHub。
 - `tests/`：本地 pytest 测试，不上传 GitHub。
 - `workspace/`：本地上传文件和产物目录，不上传 GitHub。
@@ -213,10 +215,13 @@ python utils\tool_smoke_check.py
 - `RAG`：知识库检索。
 - `MEMORY`：摘要记忆、最近对话、短期记忆和偏好上下文。
 - `LLM`：直接调用本地模型。
-- `CALCULATOR`：安全表达式计算，不执行任意代码。
 - `DISCOVERY`：扩大检索范围并生成深度洞察。
 - `FILE_INSPECTOR`：查看上传文件信息和内容预览。
 - `DATA_PROFILE`：统计分析上传数据文件并生成 Markdown 报告。
+
+当前 Agent 不再提供专用计算工具；涉及简单计算或数学表达式的问题由 `LLM` 普通回答处理，不保证严格数值计算能力。
+
+Planner 可见工具说明由 `tools/tool_catalog.py` 统一生成；`tools/registry.py` 负责工具实例注册与 capability 工具合并。不要在 Planner 提示词里手写一份长期漂移的工具清单。
 
 默认禁用：
 
@@ -300,6 +305,7 @@ python utils\tool_smoke_check.py
 - 当前版本仅支持本地 Ollama；远程 API 配置项已移除。
 - 如需未来重新启用远程兼容 API，需要重新设计配置、客户端调用、UI 暴露和测试边界。
 - 配置保存后只有部分运行态字段会热更新；模型、embedding、检索索引等深层配置通常需要重新初始化 Agent 或重启应用。
+- `config_runtime.py` 是唯一配置事实源；新增“运行中立即生效”的配置口径时，必须同时说明是轻量运行态热更新，还是需要重新初始化 Agent / 重启应用。
 
 ## 提示词与术语边界
 
@@ -307,6 +313,7 @@ python utils\tool_smoke_check.py
 
 - `config/prompts.yaml`
 - `config/planner.yaml`
+- `config/terminology.yaml`
 - `agent/brain/prompt_catalog.py`
 
 回答要求：
@@ -320,7 +327,8 @@ InSAR 术语要求：
 
 - InSAR 必须解释为“干涉合成孔径雷达（Interferometric Synthetic Aperture Radar）”。
 - 禁止误写为热红外、光学、多光谱、地物成像等无关技术。
-- 术语修正事实源：`agent/brain/terminology.py`。
+- 术语配置文件：`config/terminology.yaml`。
+- 术语修正实现：`agent/brain/terminology.py`。
 
 ## 文档与测试
 
@@ -341,8 +349,8 @@ InSAR 术语要求：
 自动测试：
 
 - 使用 `python -m pytest`。
-- 当前测试目录包含 47 个测试文件。
-- 本次更新后已运行全量回归：`246 passed, 148 warnings`。后续改动后必须以本地重新运行结果为准。
+- 当前测试目录包含 45 个测试文件。
+- 本次更新后已运行全量回归：`267 collected, 266 passed, 1 failed, 148 warnings`。失败用例为 `tests/test_prompt_catalog.py::test_dialog_context_prompts_are_catalog_managed`，当前原因是测试期望 query expansion 提示词包含“提取 3-5 个关键词；短问题可 2-4 个。”，但实际配置为“提取 1-3 个关键词；短问题可 1-2 个。”。
 - 当前常见 warnings 来自 Python 3.14 下 LangChain/Pydantic V1 兼容提示，以及 ChromaDB/FastAPI/Starlette 对 `asyncio.iscoroutinefunction` 的弃用提示。
 
 ## 版本控制与忽略规则
@@ -373,6 +381,7 @@ InSAR 术语要求：
 - 修改提示词优先改 YAML 或 `agent/brain/prompt_catalog.py`。
 - 修改 API 时检查 `api/`、`services/` 和 `services/serializers.py`。
 - 修改 Brain 时检查 `agent/brain/`，不要让 Brain 承担工具执行、文件系统或数据库持久化。
+- `agent/brain/synthesis.py` 当前允许保留 prompt 构造、上下文压缩、术语约束和回答后记忆副作用编排；不要继续扩张为工具执行、数据库持久化或通用业务副作用入口。
 - 修改 Workflow 节点时检查 `agent/workflow/nodes/` 和 helper，保持 `core/graph_agent.py` 为装配门面。
 - 修改 Policies 时保持纯规则、无 I/O、无 LLM 调用。
 - 修改 Runtime 时不要把 RAG、工具业务或提示词推理塞入 Runtime。

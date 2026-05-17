@@ -58,10 +58,10 @@ def summarize_dialog(dialog_text: str) -> tuple[str, dict]:
     preferences = extract_user_preferences(text)
 
     prompt = f"""
-    你是地质滑坡防治专家。
+    你是地质灾害与工程地质专家。
     用≤30 字、中文、段落式、第三人称总结下列「地质专业内容」：
 
-    保留：地质现象 / 诱因 / 防治方法 / 监测技术
+    保留：地质现象 / 灾害类型 / 诱因 / 防治方法 / 监测技术
     忽略：问候、自我介绍、与地质无关内容
     **必须把英文术语（slide、debris、monitoring 等）翻译成中文**，禁止出现英文。
 

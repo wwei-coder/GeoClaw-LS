@@ -1,18 +1,39 @@
 import datetime
 import sqlite3
 import threading
-
+from config_runtime import SQLITE_BUSY_TIMEOUT_MS, SQLITE_JOURNAL_MODE, SQLITE_SYNCHRONOUS
 from utils.logger import logger
-
 
 class DatabaseManager:
     def __init__(self, db_path):
         self.db_path = db_path
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn = sqlite3.connect(
+            self.db_path,
+            check_same_thread=False,
+            timeout=max(float(SQLITE_BUSY_TIMEOUT_MS) / 1000.0, 0.0),
+        )
         self.cursor = self.conn.cursor()
         self._lock = threading.RLock()
         self._closed = False
+        self._configure_connection()
         self._init_db()
+
+    def _configure_connection(self):
+        with self._lock:
+            self.conn.execute(f"PRAGMA busy_timeout = {int(SQLITE_BUSY_TIMEOUT_MS)}")
+            try:
+                result = self.conn.execute(f"PRAGMA journal_mode = {SQLITE_JOURNAL_MODE}").fetchone()
+                actual_mode = str(result[0]).upper() if result and result[0] is not None else ""
+                if SQLITE_JOURNAL_MODE and actual_mode and actual_mode != SQLITE_JOURNAL_MODE:
+                    logger.warning(
+                        f"[DB] journal_mode 请求 {SQLITE_JOURNAL_MODE}，实际生效 {actual_mode}"
+                    )
+            except Exception as exc:
+                logger.warning(f"[DB] 设置 journal_mode 失败: {exc}")
+            try:
+                self.conn.execute(f"PRAGMA synchronous = {SQLITE_SYNCHRONOUS}")
+            except Exception as exc:
+                logger.warning(f"[DB] 设置 synchronous 失败: {exc}")
 
     def _init_db(self):
         with self._lock:
@@ -51,6 +72,19 @@ class DatabaseManager:
                 self.conn.commit()
 
             self.conn.commit()
+
+    def get_runtime_pragmas(self):
+        with self._lock:
+            pragma_names = ("busy_timeout", "journal_mode", "synchronous")
+            values = {}
+            for name in pragma_names:
+                try:
+                    row = self.conn.execute(f"PRAGMA {name}").fetchone()
+                    values[name] = row[0] if row else None
+                except Exception as exc:
+                    logger.warning(f"[DB] 读取 PRAGMA {name} 失败: {exc}")
+                    values[name] = None
+            return values
 
     # --- Session Management ---
     def create_session(self, title="新对话"):

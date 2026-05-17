@@ -1,3 +1,10 @@
+"""LangGraph wiring facade for the current transition stage.
+
+Keep graph state, routing semantics and node business logic moving toward
+``agent/workflow/*``. This module should stay focused on graph wiring,
+composition and runtime bridging.
+"""
+
 import operator
 import time
 from typing import TypedDict, Annotated, List, Dict, Any, Union, Optional
@@ -11,6 +18,7 @@ from agent.executor import (
 from agent.policies import (
     advance_remediation_stats,
     check_answer_requirements,
+    check_answer_relevance,
     derive_task_status,
     format_outcome_feedback,
     grade_answer_confidence,
@@ -55,6 +63,7 @@ from config_runtime import (
     GRAPH_REPLAN_ON_LOW_QUALITY,
     GRAPH_REPLAN_LOW_QUALITY_THRESHOLD,
     GRAPH_REPLAN_REQUIRE_EXPANSION,
+    GRAPH_REVIEW_REPLAN_MAX_ATTEMPTS,
 
 )
 # 定义 Agent 状态
@@ -82,6 +91,7 @@ class AgentState(TypedDict):
     trace: Annotated[List[str], operator.add]
     error: str
     replanning_needed: bool
+    answer_revision_needed: bool
     # 新增字段：用于反思逻辑
     review_count: int 
     feedback: str
@@ -97,6 +107,12 @@ class AgentState(TypedDict):
     unresolved_outcomes: Annotated[List[Dict[str, Any]], operator.add]
     remediation_metrics: Dict[str, Any]
     evidence_quality_assessment: Dict[str, Any]
+    active_step_results: List[str]
+    active_tool_results_v2: List[Dict[str, Any]]
+    active_execution_trace: List[Dict[str, Any]]
+    active_artifacts: List[Dict[str, Any]]
+    active_sources: List[str]
+    active_retrieval_chunks: List[Dict[str, Any]]
 
 class GraphAgent:
     """LangGraph workflow runtime implementation (phase-5 keeps structure stable)."""
@@ -180,10 +196,14 @@ class GraphAgent:
         )
         self.reviewer_node = ReviewerNode(
             core=self.core,
+            task_from_state=self._task_from_state,
+            safe_save_task=self._safe_save_task,
             check_answer_requirements=self._check_answer_requirements,
+            check_answer_relevance=self._check_answer_relevance,
             stream_thought=self._stream_thought,
             review_prompt_template=get_prompt_catalog().get_review_prompt_template(),
             ask_async_fn=ask_ollama_async,
+            review_replan_max_attempts=GRAPH_REVIEW_REPLAN_MAX_ATTEMPTS,
         )
         self.app_async = self._build_async_graph()
 
@@ -271,7 +291,8 @@ class GraphAgent:
             self._check_review_result,
             {
                 "pass": END,
-                "fail": "planner"
+                "revise": "solver",
+                "replan": "planner",
             }
         )
 
@@ -322,7 +343,13 @@ class GraphAgent:
         return check_answer_requirements(
             plan=dict(state.get("plan") or {}),
             answer=str(state.get("final_answer") or ""),
-            sources=list(state.get("sources", []) or []),
+            sources=list(state.get("active_sources", state.get("sources", [])) or []),
+        )
+
+    def _check_answer_relevance(self, state: AgentState) -> List[str]:
+        return check_answer_relevance(
+            question=str(state.get("question") or ""),
+            answer=str(state.get("final_answer") or ""),
         )
 
     async def _apply_final_answer_memory_effects(self, question: str, final_state: Dict[str, Any]) -> None:
@@ -387,14 +414,17 @@ class GraphAgent:
             "answer": final_state.get("final_answer", ""),
             "confidence": final_state.get("answer_confidence_score", final_state.get("context_score", 0.0)),
             "answer_confidence_label": final_state.get("answer_confidence_label", ""),
-            "sources": final_state.get("sources", []),
+            "sources": final_state.get("active_sources", final_state.get("sources", [])),
             "retrieval_quality": final_state.get("retrieval_quality_detail", {}),
-            "retrieval_chunks": final_state.get("retrieval_chunks", []),
+            "retrieval_chunks": final_state.get("active_retrieval_chunks", final_state.get("retrieval_chunks", [])),
             "task_id": final_state.get("task_id", (final_state.get("task", {}) or {}).get("id", "")),
             "task": final_state.get("task", {}),
             "steps": (final_state.get("task", {}) or {}).get("steps", []),
-            "execution_trace": final_state.get("execution_trace", []),
-            "tool_results_v2": final_state.get("tool_results_v2", []),
-            "artifacts": final_state.get("artifacts", (final_state.get("task", {}) or {}).get("artifacts", [])),
+            "execution_trace": final_state.get("active_execution_trace", final_state.get("execution_trace", [])),
+            "tool_results_v2": final_state.get("active_tool_results_v2", final_state.get("tool_results_v2", [])),
+            "artifacts": final_state.get(
+                "active_artifacts",
+                final_state.get("artifacts", (final_state.get("task", {}) or {}).get("artifacts", [])),
+            ),
             "trace": "\n".join(final_state.get("trace", [])),
         }

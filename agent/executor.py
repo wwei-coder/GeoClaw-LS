@@ -131,6 +131,9 @@ class EvidenceQualityAssessment:
     source_count: int = 0
     retrieved_chunk_count: int = 0
     evidence_coverage: float = 0.0
+    source_diversity: float = 0.0
+    avg_chunk_length: float = 0.0
+    section_count: int = 0
     citation_present: bool = False
     separates_supported_and_inferred: bool = False
     issue_type: str = "none"
@@ -143,21 +146,14 @@ class EvidenceQualityAssessment:
             "source_count": int(self.source_count or 0),
             "retrieved_chunk_count": int(self.retrieved_chunk_count or 0),
             "evidence_coverage": round(float(self.evidence_coverage or 0.0), 3),
+            "source_diversity": round(float(self.source_diversity or 0.0), 3),
+            "avg_chunk_length": round(float(self.avg_chunk_length or 0.0), 1),
+            "section_count": int(self.section_count or 0),
             "citation_present": bool(self.citation_present),
             "separates_supported_and_inferred": bool(self.separates_supported_and_inferred),
             "issue_type": self.issue_type,
             "summary": self.summary,
         }
-
-def _extract_simple_expression(text: str) -> str:
-    if not text:
-        return ""
-    pattern = r"[0-9\.\(\)\+\-\*\/\s]{3,}"
-    candidates = [c.strip() for c in re.findall(pattern, text) if c and c.strip()]
-    for expr in candidates:
-        if any(op in expr for op in "+-*/") and not re.search(r"[A-Za-z_]", expr):
-            return expr
-    return ""
 
 def build_remediation_decision(
     step: AgentStep,
@@ -261,32 +257,6 @@ def build_remediation_decision(
             current_attempt=step_attempt,
             allowed=False,
             trace_summary="文件检查缺少 file_id，请用户提供文件上下文。",
-        )
-        return RemediationDecision(True, action, "", action.trace_summary)
-
-    if tool == "CALCULATOR" and issue == "invalid_input":
-        expr = _extract_simple_expression(step.instruction)
-        if expr:
-            action = RemediationAction(
-                action_type="retry_same_tool",
-                reason=summary or "输入不规范",
-                tool_name=tool,
-                retry_tool="CALCULATOR",
-                retry_task=expr,
-                max_attempts=1,
-                current_attempt=step_attempt + 1,
-                allowed=True,
-                trace_summary="计算输入不规范，自动提取表达式后重试一次。",
-            )
-            return RemediationDecision(True, action, "", action.trace_summary)
-        action = RemediationAction(
-            action_type="ask_user",
-            reason=summary or "无法提取可计算表达式",
-            tool_name=tool,
-            max_attempts=0,
-            current_attempt=step_attempt,
-            allowed=False,
-            trace_summary="计算表达式不明确，请用户补充可计算表达式。",
         )
         return RemediationDecision(True, action, "", action.trace_summary)
 
@@ -403,19 +373,55 @@ def assess_evidence_quality(
     sources: Optional[List[str]],
     retrieval_chunks: Optional[List[Dict[str, Any]]],
     need_evidence: bool,
+    question: str = "",
     confidence_label: str = "",
 ) -> Dict[str, Any]:
     text = str(answer or "")
+    normalized_question = str(question or "")
     src_list = [str(s).strip() for s in (sources or []) if str(s).strip()]
     chunk_list = list(retrieval_chunks or [])
-    source_count = len(set(src_list))
+    chunk_sources = [
+        str((dict(item or {}).get("doc_name") or dict(item or {}).get("source") or "")).strip()
+        for item in chunk_list
+    ]
+    chunk_sources = [item for item in chunk_sources if item]
+    source_names = set(src_list) | set(chunk_sources)
+    source_count = len(source_names)
     chunk_count = len(chunk_list)
     has_sources = source_count > 0
+    sections = set()
+    chunk_lengths: List[int] = []
+    for raw in chunk_list:
+        item = dict(raw or {})
+        section_key = item.get("section_title")
+        if not section_key:
+            section_key = item.get("section_idx")
+        if section_key not in {None, ""}:
+            sections.add(str(section_key))
+        content = str(item.get("content") or item.get("parent_content") or "")
+        if content:
+            chunk_lengths.append(len(content))
+    section_count = len(sections)
+    avg_chunk_length = (sum(chunk_lengths) / len(chunk_lengths)) if chunk_lengths else 0.0
+    source_diversity = (source_count / max(1, chunk_count)) if chunk_count else 0.0
     citation_present = any(token in text for token in ("来源", "资料显示", "根据", "【", "文献", "出处"))
+    simple_definition_question = any(token in normalized_question for token in ("是什么", "什么是", "定义", "含义", "指什么"))
+    multi_source_question = any(
+        token in normalized_question
+        for token in ("对比", "比较", "综合", "多文档", "不同", "差异", "关联", "共性", "规律", "深度", "分析")
+    )
+    contains_inference = any(token in text for token in ("推断", "推测", "可能", "估计", "判断"))
     separates = (
         ("资料支持" in text and "推断" in text)
         or ("资料未明确提及" in text and "推断" in text)
         or ("资料支持" in text and "模型推断" in text)
+    )
+    single_chunk_sufficient = (
+        bool(need_evidence)
+        and simple_definition_question
+        and chunk_count == 1
+        and has_sources
+        and citation_present
     )
 
     coverage = 0.0
@@ -430,13 +436,26 @@ def assess_evidence_quality(
         issue_type = "missing_sources"
         coverage = 0.0
         summary = "需要证据但未提供来源。"
-    elif need_evidence and chunk_count <= 1:
+    elif need_evidence and chunk_count <= 0:
+        issue_type = "no_retrieval_chunks"
+        coverage = 0.0
+        summary = "需要证据但未保留检索片段。"
+    elif need_evidence and chunk_count <= 1 and not single_chunk_sufficient:
         issue_type = "weak_coverage"
         summary = "检索片段较少，证据覆盖偏弱。"
+    elif need_evidence and multi_source_question and source_count <= 1:
+        issue_type = "single_source_coverage"
+        summary = "问题需要综合或对比，但证据来源过于单一。"
+    elif need_evidence and section_count <= 1 and chunk_count >= 3 and not simple_definition_question:
+        issue_type = "narrow_section_coverage"
+        summary = "检索片段集中在同一章节或主题，覆盖范围偏窄。"
+    elif need_evidence and 0 < avg_chunk_length < 80 and not simple_definition_question:
+        issue_type = "short_context"
+        summary = "检索片段上下文过短，支撑复杂回答不足。"
     elif need_evidence and not citation_present:
         issue_type = "no_citation"
         summary = "回答缺少明显引用标记。"
-    elif need_evidence and not separates:
+    elif need_evidence and contains_inference and not separates:
         issue_type = "unclear_support_boundary"
         summary = "未清晰区分资料支持与模型推断。"
 
@@ -450,6 +469,9 @@ def assess_evidence_quality(
         source_count=source_count,
         retrieved_chunk_count=chunk_count,
         evidence_coverage=coverage,
+        source_diversity=source_diversity,
+        avg_chunk_length=avg_chunk_length,
+        section_count=section_count,
         citation_present=bool(citation_present),
         separates_supported_and_inferred=bool(separates),
         issue_type=issue_type,
@@ -591,38 +613,6 @@ def assess_tool_outcome(
             usable=True,
             issue_type="none",
             summary="数据工具输出可用。",
-        )
-
-    if tool_key == "CALCULATOR":
-        if not result.success:
-            issue = "invalid_input" if ("表达式" in error_text or "parse" in error_text.lower()) else "tool_error"
-            return _build_assessment(
-                tool_name=tool_key,
-                success=False,
-                usable=False,
-                issue_type=issue,
-                summary=error_text or "计算失败。",
-                suggested_action="建议用户明确表达式，或先用 LLM 提取表达式后再计算。",
-                retryable=False,
-                fallback_tool="LLM",
-            )
-        if not content:
-            return _build_assessment(
-                tool_name=tool_key,
-                success=True,
-                usable=False,
-                issue_type="empty_result",
-                summary="计算结果为空。",
-                suggested_action="建议用户明确表达式后重试。",
-                retryable=True,
-                fallback_tool="LLM",
-            )
-        return _build_assessment(
-            tool_name=tool_key,
-            success=True,
-            usable=True,
-            issue_type="none",
-            summary="计算结果可用。",
         )
 
     if tool_key == "LLM":
@@ -808,9 +798,7 @@ class AgentExecutor:
     def _enrich_result_metadata(self, tool_key: str, instruction: str, result: ToolResult) -> ToolResult:
         metadata = dict(result.metadata or {})
         metadata.setdefault("tool", tool_key)
-        if tool_key == "CALCULATOR":
-            metadata.setdefault("calculator_expression", instruction)
-        elif tool_key == "MEMORY":
+        if tool_key == "MEMORY":
             text = result.content or ""
             memory_hits = sum(1 for tag in ("【摘要记忆】", "【最近对话】", "【短期记忆】") if tag in text)
             metadata.setdefault("memory_hit_count", memory_hits)

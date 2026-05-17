@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from config_runtime import MAX_CONTEXT_LEN, SYNTHESIS_MAX_EVIDENCE_CHARS
 from utils.ollama_client import ask_ollama, ask_ollama_async, ask_ollama_stream, ask_ollama_stream_async
 from .prompt_catalog import get_prompt_catalog
+from .terminology import build_terminology_constraints
 
 class AnswerSynthesisService:
     def __init__(
@@ -126,6 +127,7 @@ class AnswerSynthesisService:
         step_results: List[str],
         kb_chunks: List[Dict[str, Any]],
         sources: List[str],
+        revision_feedback: str = "",
         stream_callback: Optional[Any] = None,
         canceled: bool = False,
         persist_memory: bool = True,
@@ -136,12 +138,16 @@ class AnswerSynthesisService:
         kb_evidence = self._build_kb_evidence(kb_chunks)
         full_steps = self._compress_step_results_for_context(step_results)
         user_prefs_str = self.memory_service.render_user_preferences_block()
+        terminology_constraints = build_terminology_constraints(question, f"{full_steps}\n{kb_evidence}")
 
         final_prompt = self.prompt_catalog.render(
             "synthesis_final_answer",
             question=question,
             step_results=full_steps,
-            kb_evidence=kb_evidence + user_prefs_str,
+            kb_evidence=kb_evidence,
+            user_preferences=user_prefs_str or "无。",
+            revision_feedback=revision_feedback or "无。",
+            terminology_constraints=terminology_constraints,
         )
 
         final_answer = ""
@@ -166,6 +172,7 @@ class AnswerSynthesisService:
         step_results: List[str],
         kb_chunks: List[Dict[str, Any]],
         sources: List[str],
+        revision_feedback: str = "",
         stream_callback: Optional[Any] = None,
         canceled: bool = False,
         persist_memory: bool = True,
@@ -176,12 +183,16 @@ class AnswerSynthesisService:
         kb_evidence = self._build_kb_evidence(kb_chunks)
         full_steps = self._compress_step_results_for_context(step_results)
         user_prefs_str = self.memory_service.render_user_preferences_block()
+        terminology_constraints = build_terminology_constraints(question, f"{full_steps}\n{kb_evidence}")
 
         final_prompt = self.prompt_catalog.render(
             "synthesis_final_answer",
             question=question,
             step_results=full_steps,
-            kb_evidence=kb_evidence + user_prefs_str,
+            kb_evidence=kb_evidence,
+            user_preferences=user_prefs_str or "无。",
+            revision_feedback=revision_feedback or "无。",
+            terminology_constraints=terminology_constraints,
         )
 
         final_answer = ""

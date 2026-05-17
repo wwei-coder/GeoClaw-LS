@@ -34,6 +34,7 @@ def build_initial_state(
         "trace": [],
         "error": "",
         "replanning_needed": False,
+        "answer_revision_needed": False,
         "review_count": 0,
         "feedback": "",
         "is_satisfactory": True,
@@ -53,4 +54,10 @@ def build_initial_state(
         "unresolved_outcomes": [],
         "remediation_metrics": {},
         "evidence_quality_assessment": {},
+        "active_step_results": [],
+        "active_tool_results_v2": [],
+        "active_execution_trace": [],
+        "active_artifacts": [],
+        "active_sources": [],
+        "active_retrieval_chunks": [],
     }

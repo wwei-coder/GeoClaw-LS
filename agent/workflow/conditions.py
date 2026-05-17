@@ -11,7 +11,9 @@ def check_next_step(state: Dict[str, Any]) -> str:
 def check_review_result(state: Dict[str, Any]) -> str:
     if state.get("is_satisfactory", True):
         return "pass"
-    return "fail"
+    if state.get("answer_revision_needed", False):
+        return "revise"
+    return "replan"
 
 def is_data_analysis_request(question: str, file_id: str) -> bool:
     text = (question or "").lower()

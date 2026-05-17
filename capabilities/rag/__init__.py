@@ -7,7 +7,6 @@ __all__ = [
     "get_capability",
     "KnowledgeSyncSummary",
     "KnowledgeBaseStatus",
-    "KnowledgeBaseStatus",
     "RetrievalRequest",
     "RetrievalResult",
 ]

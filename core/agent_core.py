@@ -1,5 +1,10 @@
-import os
-import json
+"""Agent composition root and runtime facade.
+
+Keep new business facts in ``agent/*``, ``capabilities/*``, ``tools/*`` and
+``storage/*``. This module should stay focused on composition, lifecycle and
+compatibility-facing runtime entry points.
+"""
+
 import asyncio
 import threading
 import contextvars
@@ -27,9 +32,6 @@ from config_runtime import (
     FINGERPRINT_PATH,
     DEFAULT_EMBEDDING_MODEL,
     OLLAMA_TEMPERATURE,
-    RETRIEVAL_METRICS_ENABLED,
-    RETRIEVAL_METRICS_WINDOW,
-    RETRIEVAL_METRICS_LOG_PATH,
     VECTOR_COLLECTION_NAME,
     EMBEDDING_BACKEND,
     RERANK_STRATEGY,
@@ -235,9 +237,6 @@ class AgentCore:
     def _fix_terminology(self, answer: str, question: str = "") -> str:
         return fix_terminology(answer, question)
 
-    def _build_fallback_session_title(self, first_question: str) -> str:
-        return self._get_session_facade().build_fallback_session_title(first_question)
-
     async def _auto_rename_session_async(self, session_id: int, first_question: str):
         await self._get_session_facade().auto_rename_session_async(session_id, first_question)
 
@@ -246,6 +245,38 @@ class AgentCore:
 
     def get_active_request_context(self) -> Optional[AgentRequestContext]:
         return get_request_context(self._request_context_var)
+
+    async def _review_direct_answer_or_replan(
+        self,
+        *,
+        question: str,
+        result: Dict[str, Any],
+        request_context: AgentRequestContext,
+        resumed_from: Optional[str] = None,
+        stream_callback=None,
+    ) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+        answer = str(result.get("answer") or "").strip()
+        if not answer:
+            return result
+        try:
+            review = await self.brain.review(question=question, answer=answer, review_count=0)
+        except Exception as exc:
+            logger.warning(f"[Reviewer] 直返回答审核异常，已保留原回答: {exc}")
+            return result
+        if review.is_satisfactory:
+            return result
+        if stream_callback:
+            stream_callback(f"\n> [审核未通过] {review.feedback}，正在重新规划...\n")
+        return await self.runtime.run_async(
+            question,
+            file_id=request_context.file_id or "",
+            files=request_context.files,
+            task_id=request_context.task_id or "",
+            run_mode=request_context.run_mode or "sync",
+            resumed_from=resumed_from,
+        )
 
     async def chat_async(
         self,
@@ -306,9 +337,23 @@ class AgentCore:
                         logger.warning(f"[Session] 异步自动重命名任务创建失败: {e}")
 
                 if self.brain.is_small_talk(question):
-                    return await self.brain.answer_small_talk(question)
+                    result = await self.brain.answer_small_talk(question)
+                    return await self._review_direct_answer_or_replan(
+                        question=question,
+                        result=result,
+                        request_context=req_ctx,
+                        resumed_from=resumed_from,
+                        stream_callback=stream_callback,
+                    )
                 if self.brain.is_memory_query(question):
-                    return await self.brain.answer_memory_query(question)
+                    result = await self.brain.answer_memory_query(question)
+                    return await self._review_direct_answer_or_replan(
+                        question=question,
+                        result=result,
+                        request_context=req_ctx,
+                        resumed_from=resumed_from,
+                        stream_callback=stream_callback,
+                    )
 
                 if self.pending_tool_call:
                     judge_prompt = get_prompt_catalog().render("confirmation_judge", question=question)

@@ -18,6 +18,11 @@ from config_runtime import (
     CHUNK_PARENT_LARGE_THRESHOLD,
 )
 
+HEADING_RE = re.compile(
+    r"^(?:#{1,6}\s+.+|第[一二三四五六七八九十百零\d]+[章节部分篇]\s*.*|[一二三四五六七八九十]+[、.．]\s*.+|\d+(?:\.\d+){0,3}\s+.+)\s*$"
+)
+PAGE_MARKER_RE = re.compile(r"\[页码:\s*(\d+)\]")
+
 def _detect_doc_type(doc_name: str) -> str:
     ext = os.path.splitext((doc_name or "").lower())[1]
     if ext == ".pdf":
@@ -56,9 +61,7 @@ def _split_by_sections(text: str):
     text = (text or "").strip()
     if not text:
         return []
-    heading_re = re.compile(
-        r"(?m)^(?:#{1,6}\s+.+|第[一二三四五六七八九十百零\d]+[章节部分篇]\s*.*|[一二三四五六七八九十]+[、.．]\s*.+|\d+(?:\.\d+){0,3}\s+.+)\s*$"
-    )
+    heading_re = re.compile(r"(?m)" + HEADING_RE.pattern)
     matches = list(heading_re.finditer(text))
     if not matches:
         paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
@@ -76,6 +79,31 @@ def _split_by_sections(text: str):
         if block:
             sections.append(block)
     return sections if sections else [text]
+
+def _section_title(section: str) -> str:
+    for line in str(section or "").splitlines():
+        cleaned = line.strip()
+        if not cleaned or PAGE_MARKER_RE.fullmatch(cleaned):
+            continue
+        if HEADING_RE.match(cleaned):
+            return cleaned[:120]
+        if len(cleaned) <= 60 and not cleaned.endswith(("。", "；", "，", ",")):
+            return cleaned[:120]
+        break
+    return ""
+
+def _infer_page_num(*texts: str):
+    for text in texts:
+        match = PAGE_MARKER_RE.search(str(text or ""))
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+    return None
+
+def _clean_page_markers(text: str) -> str:
+    return PAGE_MARKER_RE.sub("", str(text or "")).strip()
 
 def split_text(text, chunk_size=500, overlap=100):
     sections = _split_by_sections(text)
@@ -100,7 +128,15 @@ def build_knowledge_chunks(documents):
         sections = _split_by_sections(doc_text)
         if not sections:
             continue
+        last_seen_page = None
         for s_idx, section in enumerate(sections):
+            marker_page = _infer_page_num(section)
+            if marker_page:
+                last_seen_page = marker_page
+            section_title = _section_title(section)
+            section_page = marker_page or last_seen_page
+            if not _clean_page_markers(section):
+                continue
             parent_chunk_size = (
                 CHUNK_PARENT_LARGE_SIZE
                 if len(section) > CHUNK_PARENT_LARGE_THRESHOLD
@@ -114,6 +150,8 @@ def build_knowledge_chunks(documents):
             )
             parent_chunks = parent_splitter.split_text(section)
             for p_idx, parent_content in enumerate(parent_chunks):
+                parent_page = _infer_page_num(parent_content, section) or section_page or 0
+                clean_parent_content = _clean_page_markers(parent_content)
                 parent_id = f"{doc_name}::parent_{s_idx}_{p_idx}::{uuid.uuid4().hex[:6]}"
                 child_chunk_size = (
                     CHUNK_CHILD_NUMERIC_SIZE
@@ -128,14 +166,22 @@ def build_knowledge_chunks(documents):
                 )
                 child_chunks = child_splitter.split_text(parent_content)
                 for c_idx, child_content in enumerate(child_chunks):
+                    page_num = _infer_page_num(child_content, parent_content, section) or parent_page or 0
+                    clean_child_content = _clean_page_markers(child_content)
+                    if not clean_child_content:
+                        continue
                     chunk_id = f"{doc_name}::child_{s_idx}_{p_idx}_{c_idx}::{uuid.uuid4().hex[:6]}"
                     item = {
                         "id": chunk_id,
                         "doc_name": doc_name,
-                        "content": child_content,
-                        "parent_content": parent_content,
+                        "content": clean_child_content,
+                        "parent_content": clean_parent_content,
                         "parent_id": parent_id,
                         "section_idx": s_idx,
+                        "section_title": section_title,
+                        "page_num": page_num,
+                        "parent_idx": p_idx,
+                        "child_idx": c_idx,
                         "type": doc_type,
                         "active": True,
                     }

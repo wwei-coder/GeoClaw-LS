@@ -1,6 +1,7 @@
 import json
 import time
 import asyncio
+import random
 import re
 import requests
 import httpx
@@ -13,14 +14,20 @@ from config_runtime import (
     OLLAMA_URL,
     OLLAMA_MODEL,
     OLLAMA_TEMPERATURE,
+    OLLAMA_CONNECT_TIMEOUT,
     OLLAMA_TIMEOUT,
+    OLLAMA_STREAM_CONNECT_TIMEOUT,
     OLLAMA_STREAM_TIMEOUT,
+    LLM_RETRY_BACKOFF_BASE,
+    LLM_RETRY_BACKOFF_JITTER,
+    LLM_RETRY_MAX_ATTEMPTS,
 )
 
 tracer = trace.get_tracer(__name__)
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-_MAX_RETRIES = 2
-_BACKOFF_BASE = 0.6
+_MAX_RETRIES = LLM_RETRY_MAX_ATTEMPTS
+_BACKOFF_BASE = LLM_RETRY_BACKOFF_BASE
+_BACKOFF_JITTER = LLM_RETRY_BACKOFF_JITTER
 
 class OllamaError(RuntimeError):
     """统一 LLM 客户端异常（兼容旧命名）。"""
@@ -33,7 +40,10 @@ def _format_error(error: Exception) -> str:
     return type(error).__name__
 
 def _backoff_sleep_seconds(attempt_index: int) -> float:
-    return _BACKOFF_BASE * (2 ** attempt_index)
+    base_sleep = _BACKOFF_BASE * (2 ** attempt_index)
+    if _BACKOFF_JITTER <= 0:
+        return base_sleep
+    return max(0.0, base_sleep + random.uniform(0.0, _BACKOFF_JITTER))
 
 def _extract_status_code(error: Exception) -> Optional[int]:
     text = str(error)
@@ -61,10 +71,24 @@ def _resolve_model_name(model: Optional[str] = None) -> str:
         return model
     return OLLAMA_MODEL
 
-def _resolve_timeout(timeout: Optional[int], stream: bool) -> int:
+def _resolve_read_timeout(timeout: Optional[int], stream: bool) -> float:
     if timeout is not None:
-        return timeout
-    return OLLAMA_STREAM_TIMEOUT if stream else OLLAMA_TIMEOUT
+        return float(timeout)
+    return float(OLLAMA_STREAM_TIMEOUT if stream else OLLAMA_TIMEOUT)
+
+
+def _resolve_connect_timeout(stream: bool) -> float:
+    return float(OLLAMA_STREAM_CONNECT_TIMEOUT if stream else OLLAMA_CONNECT_TIMEOUT)
+
+
+def _build_requests_timeout(timeout: Optional[int], stream: bool) -> tuple[float, float]:
+    return (_resolve_connect_timeout(stream), _resolve_read_timeout(timeout, stream))
+
+
+def _build_httpx_timeout(timeout: Optional[int], stream: bool) -> httpx.Timeout:
+    connect_timeout = _resolve_connect_timeout(stream)
+    read_timeout = _resolve_read_timeout(timeout, stream)
+    return httpx.Timeout(connect=connect_timeout, read=read_timeout, write=read_timeout, pool=connect_timeout)
 
 def _resolve_headers() -> Dict[str, str]:
     return {"Content-Type": "application/json"}
@@ -113,7 +137,7 @@ def ask_ollama(
     with tracer.start_as_current_span("ask_ollama") as span:
         model_name = _resolve_model_name(model)
         target_url = _resolve_target_url(url)
-        req_timeout = _resolve_timeout(timeout, stream=False)
+        req_timeout = _build_requests_timeout(timeout, stream=False)
 
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
         span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_name)
@@ -166,7 +190,7 @@ def ask_ollama_stream(
     with tracer.start_as_current_span("ask_ollama_stream") as span:
         model_name = _resolve_model_name(model)
         target_url = _resolve_target_url(url)
-        req_timeout = _resolve_timeout(timeout, stream=True)
+        req_timeout = _build_requests_timeout(timeout, stream=True)
 
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
         span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_name)
@@ -227,7 +251,7 @@ async def ask_ollama_async(
     with tracer.start_as_current_span("ask_ollama_async") as span:
         model_name = _resolve_model_name(model)
         target_url = _resolve_target_url(url)
-        req_timeout = _resolve_timeout(timeout, stream=False)
+        req_timeout = _build_httpx_timeout(timeout, stream=False)
 
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
         span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_name)
@@ -302,7 +326,7 @@ async def ask_ollama_stream_async(
     with tracer.start_as_current_span("ask_ollama_stream_async") as span:
         model_name = _resolve_model_name(model)
         target_url = _resolve_target_url(url)
-        req_timeout = _resolve_timeout(timeout, stream=True)
+        req_timeout = _build_httpx_timeout(timeout, stream=True)
 
         span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
         span.set_attribute(SpanAttributes.LLM_MODEL_NAME, model_name)

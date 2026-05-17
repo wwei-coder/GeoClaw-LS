@@ -32,7 +32,6 @@ def append_evidence_summary_if_needed(final_answer: str, evidence_assessment: Di
         return final_answer + "\n\n【证据校验摘要】" + f"{(evidence_assessment or {}).get('summary', '')}"
     return final_answer
 
-
 def build_task_metadata_update(
     *,
     remediation_metrics: Dict[str, Any],

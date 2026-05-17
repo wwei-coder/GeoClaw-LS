@@ -55,11 +55,18 @@ def build_replan_return_payload(
     remediation_count: Optional[int] = None,
     remediation_stats: Optional[Dict[str, Any]] = None,
     unresolved_outcomes: Optional[List[Dict[str, Any]]] = None,
+    active_step_results: Optional[List[str]] = None,
+    active_tool_results_v2: Optional[List[Dict[str, Any]]] = None,
+    active_execution_trace: Optional[List[Dict[str, Any]]] = None,
+    active_artifacts: Optional[List[Dict[str, Any]]] = None,
+    active_sources: Optional[List[str]] = None,
+    active_retrieval_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "task": task,
         **step_payload,
         "replanning_needed": True,
+        "answer_revision_needed": False,
         "execution_replan_count": execution_replan_count,
         "feedback": feedback,
         "trace": trace,
@@ -74,6 +81,18 @@ def build_replan_return_payload(
         payload["remediation_stats"] = remediation_stats
     if unresolved_outcomes is not None:
         payload["unresolved_outcomes"] = unresolved_outcomes
+    if active_step_results is not None:
+        payload["active_step_results"] = active_step_results
+    if active_tool_results_v2 is not None:
+        payload["active_tool_results_v2"] = active_tool_results_v2
+    if active_execution_trace is not None:
+        payload["active_execution_trace"] = active_execution_trace
+    if active_artifacts is not None:
+        payload["active_artifacts"] = active_artifacts
+    if active_sources is not None:
+        payload["active_sources"] = active_sources
+    if active_retrieval_chunks is not None:
+        payload["active_retrieval_chunks"] = active_retrieval_chunks
     return payload
 
 
@@ -92,6 +111,12 @@ def build_executor_return_payload(
     unresolved_outcomes: List[Dict[str, Any]],
     step_payload: Dict[str, Any],
     steps: Optional[List[Dict[str, Any]]] = None,
+    active_step_results: Optional[List[str]] = None,
+    active_tool_results_v2: Optional[List[Dict[str, Any]]] = None,
+    active_execution_trace: Optional[List[Dict[str, Any]]] = None,
+    active_artifacts: Optional[List[Dict[str, Any]]] = None,
+    active_sources: Optional[List[str]] = None,
+    active_retrieval_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "task": task,
@@ -106,7 +131,21 @@ def build_executor_return_payload(
         "remediation_count": remediation_count,
         "remediation_stats": remediation_stats,
         "unresolved_outcomes": unresolved_outcomes,
+        "replanning_needed": False,
+        "answer_revision_needed": False,
     }
     if steps is not None:
         payload["steps"] = steps
+    if active_step_results is not None:
+        payload["active_step_results"] = active_step_results
+    if active_tool_results_v2 is not None:
+        payload["active_tool_results_v2"] = active_tool_results_v2
+    if active_execution_trace is not None:
+        payload["active_execution_trace"] = active_execution_trace
+    if active_artifacts is not None:
+        payload["active_artifacts"] = active_artifacts
+    if active_sources is not None:
+        payload["active_sources"] = active_sources
+    if active_retrieval_chunks is not None:
+        payload["active_retrieval_chunks"] = active_retrieval_chunks
     return payload

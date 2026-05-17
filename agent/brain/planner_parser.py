@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import re
-from tools.registry import get_enabled_tool_names
+from tools.tool_catalog import get_enabled_tool_names
 from utils.logger import logger
 
 DATA_TOOLS = {"DATA_PROFILE", "FILE_INSPECTOR"}
@@ -126,9 +126,7 @@ def process_planner_response(raw_response: str, question: str) -> dict:
         tool = str(s.get("tool", "LLM")).upper().strip()
         task = str(s.get("task", "")).strip()
 
-        if "CALC" in tool or "MATH" in tool:
-            tool = "CALCULATOR"
-        elif "MEM" in tool or "HIST" in tool:
+        if "MEM" in tool or "HIST" in tool:
             tool = "MEMORY"
         elif "RAG" in tool or "SEARCH" in tool or "KB" in tool:
             tool = "RAG"

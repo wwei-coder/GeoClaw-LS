@@ -1,12 +1,10 @@
 """Retrieval orchestration pipeline for RAG capability."""
 
 from __future__ import annotations
-
 import asyncio
 import concurrent.futures
 import time
 from typing import Any, Callable, Dict, List, Optional
-
 from config_runtime import (
     LLM_TEMPERATURE_KEYWORD_EXPANSION,
     LLM_TEMPERATURE_METADATA_FILTER,
@@ -27,7 +25,6 @@ from config_runtime import (
     VECTOR_SEARCH_TOP_K,
 )
 from utils.logger import logger
-
 from .diagnostics import record_retrieval_metrics
 from .quality import (
     evaluate_retrieval_quality,

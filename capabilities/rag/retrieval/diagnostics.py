@@ -1,23 +1,19 @@
 """Diagnostics helpers for retrieval metrics logging."""
 
 from __future__ import annotations
-
 import json
 import os
 import threading
 import time
 from collections import deque
 from typing import Any, Dict
-
 from utils.logger import logger
-
 
 def ensure_metrics_state(holder: Any, window_size: int) -> None:
     if hasattr(holder, "_metrics_lock") and hasattr(holder, "_metrics_window"):
         return
     holder._metrics_lock = threading.Lock()
     holder._metrics_window = deque(maxlen=max(20, int(window_size)))
-
 
 def record_retrieval_metrics(
     holder: Any,

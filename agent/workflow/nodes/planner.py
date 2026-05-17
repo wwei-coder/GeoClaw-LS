@@ -108,8 +108,15 @@ class PlannerNode:
                 "artifacts": [],
                 "cancel_requested": False,
                 "replanning_needed": False,
+                "answer_revision_needed": False,
                 "feedback": "",
                 "trace": [trace_text] + planner_text_trace,
+                "active_step_results": [],
+                "active_tool_results_v2": [],
+                "active_execution_trace": [],
+                "active_artifacts": [],
+                "active_sources": [],
+                "active_retrieval_chunks": [],
             }
         except Exception as e:
             return {"error": str(e), "trace": [f"Planner Error: {e}"]}

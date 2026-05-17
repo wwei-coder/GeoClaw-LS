@@ -16,6 +16,7 @@ class SynthesisAdapter:
             "step_results": list(payload.get("step_results", []) or []),
             "kb_chunks": list(payload.get("kb_chunks", []) or []),
             "sources": list(payload.get("sources", []) or []),
+            "revision_feedback": str(payload.get("revision_feedback") or ""),
             "stream_callback": payload.get("stream_callback"),
             "canceled": bool(payload.get("canceled", False)),
         }
